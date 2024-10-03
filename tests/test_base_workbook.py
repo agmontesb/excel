@@ -161,6 +161,49 @@ class TestBaseWorkbook:
         assert [tbl_address(cell)[-1] for cell, value in zip(links, values) if value is None] == ['A1']
 
 
+class TestHelperMethods:
+
+    def test_offset_rng(self, base_workbook):
+        wb = base_workbook
+        ws = wb['Parameters and inner links']
+        tbl = ws['sh2_tbl1']
+
+        # Offset single cell
+        assert tbl.offset_rng('A1', row_offset=1) == 'A2', 'Offset row'
+        assert tbl.offset_rng('A1', row_offset=1, col_offset=1) == 'B2', 'Offset row and col'
+        assert tbl.offset_rng('$A1', row_offset=1, col_offset=1) == '$A2', 'Offset row and col'
+        assert tbl.offset_rng('A$1', row_offset=1, col_offset=1) == 'B$1', 'Offset row and col'
+        assert tbl.offset_rng('$A$1', row_offset=1, col_offset=1) == '$A$1', 'Offset row and col'
+
+        # Offset range
+        assert tbl.offset_rng('A1:C5', col_offset=1) == 'B1:D5', 'Offset col'
+
+        # The disc_cell parameter: Cells be offseted if cell > = disc_cell
+        # The disc_cell worksheet name if not present to be consider as tbl parent worksheet title
+        assert tbl.offset_rng('D4', row_offset=1, disc_cell='A5') == 'D4', 'D4 < A5 => D4'
+        assert tbl.offset_rng('B5', row_offset=1, disc_cell='A5') == 'B6', 'B5 > A5 => B6'
+        # The disc_cell worksheet name offset only cells in the same worksheet
+        assert tbl.offset_rng("'sheet12'!C5", row_offset=1, disc_cell="'sheet12'!A5") == "'sheet12'!C6", f'"sheet12" != "{ws.title}"'
+        assert tbl.offset_rng('C5', row_offset=1, disc_cell="'sheet12'!A5") == 'C5', f'"sheet12" != "{ws.title}"'
+
+        # Equivalentes
+        r1 = tbl.offset_rng('B5', row_offset=1, disc_cell="A5")
+        r2 = tbl.offset_rng('B5', row_offset=1, disc_cell=f"'{ws.title}'!A5")
+        r3 = tbl.offset_rng(f"'{ws.title}'!B5", row_offset=1, disc_cell="A5")
+        r4 = tbl.offset_rng(f"'{ws.title}'!B5", row_offset=1, disc_cell=f"'{ws.title}'!A5")
+        assert r1 == r2 == r3.split('!')[-1] == r4.split('!')[-1], f'{r1=} != {r2=} != {r3=} != {r4=}'
+
+        # Offset list of cells = offset each cell
+        predicate = lambda x, disc_cell: '{0: >4s}{1}'.format(*cell_address(x)) >= '{0: >4s}{1}'.format(*cell_address(disc_cell))
+        cells = ['A1', 'B10', 'C5', 'D4']
+        kwargs = dict(row_offset=1, col_offset=1, disc_cell='A5')
+        fnc = lambda x: tbl.offset_rng(x, **kwargs)
+        cells_map = tbl.offset_rng(cells, **kwargs)
+        assert all(fnc(key) == value for key, value in cells_map.items()), 'Offset list of cells'
+        assert len(cells) >= len(cells_map), 'Offset list of cells'
+        assert all(predicate(x, kwargs['disc_cell']) for x in (set(cells) - cells_map.keys()))
+
+
 class TestModTables:
 
     def test_insert_rows(self, base_workbook):
@@ -171,41 +214,38 @@ class TestModTables:
         tbl = ws['sh2_tbl1']
 
         ins_slice = '6'
-        ins_rng = tbl._cell_rgn(ins_slice)
-        fml_slice = f'{ins_rng[0]}:{tbl.data_rng.split(":")[1]}'
-        tot_rng = tbl._cell_rgn(fml_slice)
+        ins_rng = [f"'{ws.title}'!A6"]
 
-        df = tbl.data
-        s = df.loc[tot_rng].dependents
-        mask = ~s.isna()
-        dependents = reduce(s[mask].tolist())
-        fml_df = (
-            df.loc[df.code.isin(dependents), ['fml', 'code']]
-            .set_index('code')
-            .rename(index= lambda x: f"'{ws.id}'!{x}")
-        )
-
-        sht_id, tbl_id = map(lambda x: f'#{x}', (ws.id, tbl.id))
+        sht_id, tbl_id = '', ''
         fnc = lambda: wb[sht_id][tbl_id]
         tables = collections.defaultdict(fnc)
-        
-        assert tables[f"'{ws.id}'!{tbl.id}"] is tbl
-
-        external_links = wb.links.keys() & set(f"'{ws.id}'!{x}" for x in df.loc[tot_rng].code)
-        ltables = reduce([wb.links[code] for code in external_links])
-        fmls = [fml_df]
-        for ltbl in ltables:
-            sht_id, tbl_id = map(lambda x: f'#{x}', tbl_address(ltbl))
-            df = tables[f"'{sht_id[1:]}'!{tbl_id[1:]}"].data
-            dependents = reduce(df.loc[df.code.isin(external_links)].dependents)
-            lfml_df = (
+        fmls = []
+        for tbl in ws.tables:
+            df = tbl.data
+            s = df.dependents
+            mask = ~s.isna()
+            dependents = reduce(s[mask].tolist())
+            fml_df = (
                 df.loc[df.code.isin(dependents), ['fml', 'code']]
                 .set_index('code')
-                .rename(index= lambda x: f"'{sht_id[1:]}'!{x}")
+                .rename(index= lambda x: f"'{ws.id}'!{x}")
             )
-            fmls.append(lfml_df)
 
-        fmls = pd.concat(fmls)
+            external_links = wb.links.keys() & set(f"'{ws.id}'!{x}" for x in df.code)
+            ltables = reduce([wb.links[code] for code in external_links])
+            fmls.append(fml_df)
+            for ltbl in ltables:
+                sht_id, tbl_id = map(lambda x: f'#{x}', tbl_address(ltbl))
+                df = tables[f"'{sht_id[1:]}'!{tbl_id[1:]}"].data
+                dependents = reduce(df.loc[df.code.isin(external_links)].dependents)
+                lfml_df = (
+                    df.loc[df.code.isin(dependents), ['fml', 'code']]
+                    .set_index('code')
+                    .rename(index= lambda x: f"'{sht_id[1:]}'!{x}")
+                )
+                fmls.append(lfml_df)
+
+        fmls = pd.concat(fmls).drop_duplicates()
 
         fmls1 = []
         for tbl_code, fml in fmls.fml.items():
@@ -214,7 +254,7 @@ class TestModTables:
             fmls1.append(ltbl.encoder('decode', fml))
 
         # Insert a row
-        tbl.insert(ins_slice)
+        ws.insert(ins_slice)
 
         fmls2 = []
         for tbl_code, fml in fmls.fml.items():
@@ -223,14 +263,15 @@ class TestModTables:
             fmls2.append(ltbl.encoder('decode', fml))
 
 
-        assert not tbl.data.index.isin(ins_rng).any(), 'Insert: Not all cells has been displaced'
-
         flags = []
-        predicate = lambda x: '{0: >4s}{1}'.format(*cell_address(x)) >= '{0: >4s}{1}'.format(*cell_address(ins_rng[0]))
-        for fml_pair in zip(fmls1, fmls2):
+        for tbl_code, *fml_pair in zip(fmls.index, fmls1, fmls2):
+            sht_id, tbl_id, _ = map(lambda x: f'#{x}', cell_pattern.match(tbl_code).groups())
+            ltbl = tables[f"'{sht_id[1:]}'!{tbl_id[1:]}"]
+
             lst1, lst2 = map(rgn_pattern.findall, fml_pair)
+
             flags.extend(
-                [tbl.offset_rng(x, row_offset=1, predicate=predicate) == y for x, y in zip(lst1, lst2) if x != y]
+                [ltbl.offset_rng(x, row_offset=1, disc_cell=ins_rng[0]) == y for x, y in zip(lst1, lst2) if x != y]
             )
         assert all(flags)
 

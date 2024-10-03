@@ -269,7 +269,86 @@ class ExcelWorksheet(ExcelCollection):
         self.id = id
         self.count = -1
         self._param_map = {}
+        self._data_rgn = None
         pass
+
+    def insert(self, cell_slice):
+        excel_slice = f'{cell_slice}:{cell_slice}'.split(':', 2)[:2]
+        slice_type = cell_slice.replace(':', '')
+        is_numeric = slice_type.isnumeric()
+        is_alpha = slice_type.isalpha()
+        is_cell = is_numeric and is_alpha
+        if is_cell:    # insert columns / rows
+            return
+        if is_numeric:    # insert rows
+            field = 'row_offset'
+            fnc = int
+        else:                           # insert columns
+            field = 'col_offset'
+            fnc = ord
+
+        nitems = fnc(excel_slice[1]) - fnc(excel_slice[0]) + 1
+        kwargs = {field: nitems}
+        kwargs['disc_cell'] = f'A{fnc(excel_slice[0])}' if is_numeric else f'{fnc(excel_slice[0])}1'
+
+        ws = self
+        wb = ws.parent
+
+        for tbl in self.tables:
+            if (data_rng := tbl.offset_rng(tbl.data_rng, **kwargs)) == tbl.data_rng:
+                continue
+
+            df = tbl.data
+
+            # modificación data range
+            cells = tbl.cells_in_data_rng(df.index.tolist())
+            tbl.data_rng = data_rng
+
+            # modificación del índice del tbl.data frame (cells labels)
+            cells_map = tbl.offset_rng(cells, **kwargs)
+            tbl.data.rename(index=cells_map, inplace=True)
+
+            # modificación enlaces externos a cells modificadas
+            mask = df.index.isin(cells_map.values())
+            external_links = wb.links.keys() & set(f"'{ws.id}'!{x}" for x in df.loc[mask].code)
+            codes = [tbl_address(code)[-1] for code in external_links]
+            codes_map = df.loc[df.code.isin(codes)].code.to_dict()
+
+            to_broadcast = {
+                f"'{ws.id}'!{code}": f"'{ws.title}'!{cell}" 
+                for cell, code in codes_map.items()
+            }
+            ws.broadcast_changes(to_broadcast, field='cell')
+
+    @property
+    def data_rng(self):
+        if self._data_rgn is None:
+            cells = list(map(cell_address, self._param_map.keys()))
+            for tbl in self.tables:
+                cells.extend(map(cell_address, tbl.data_rng.split(':')))
+            rows, cols = zip(*cells)
+            rows = [int(x) for x in rows]
+            cols = [f'{x: >2s}' for x in cols]
+            r_min, r_max = min(rows), max(rows)
+            c_min, c_max = map(str.strip, (min(cols), max(cols)))
+            self._data_rng = f'{c_min}{r_min}:{c_max}{r_max}'
+        return self._data_rng
+    
+    def _repr_html_(self):
+        (rmin, cmin),  (rmax, cmax) = map(cell_address, self.data_rng.split(':'))
+        rmin, rmax = int(rmin), int(rmax)
+        cmin, cmax = ord(cmin), ord(cmax)
+        all_cells = [f'{chr(col)}{row}' for row in range(rmin, rmax + 1) for col in range(cmin, cmax + 1)]
+        t = pd.Series('', index=all_cells)
+        if self._param_map:
+            t[list(self._param_map.keys())] = list(self._param_map.values())
+        for tbl in self.tables:
+            cells_rng = tbl._cell_rgn(tbl.data_rng)
+            mask = tbl.data.index.isin(cells_rng)
+            t[tbl.data.index[mask]] = tbl.data.value[mask]
+        data = ExcelTable.excel_table(t)
+        return data._repr_html_()
+
 
     def next_id(self):
         self.count += 1
@@ -839,7 +918,8 @@ class ExcelTable(ExcelObject):
         cell_rgn = sorted(cell_rgn, key=lambda x: '{0: >4s}{1}'.format(*cell_address(x)))
         return cell_rgn
 
-    def excel_table(self, data:pd.Series):
+    @classmethod
+    def excel_table(cls, data:pd.Series):
         return (
             data
             .set_axis(
@@ -890,79 +970,63 @@ class ExcelTable(ExcelObject):
             if bflag := isinstance(cells, str):
                 cells = [cells]
 
-            if disc_cell is None:
-                disc_sht = None
-                predicate = lambda x: True
-            else:
-                disc_sht, disc_cell = tbl_address(disc_cell)
-                disc_sht = disc_sht if disc_sht != self.parent.title else None
+            disc_sht = [None, self.parent.title]
+            predicate = lambda x: True
+            if disc_cell:
+                sht, disc_cell = tbl_address(disc_cell)
+                if sht not in disc_sht:
+                    disc_sht = [sht]
                 predicate = lambda x: '{0: >4s}{1}'.format(*cell_address(x)) >= '{0: >4s}{1}'.format(*cell_address(disc_cell))
 
-            filter_cells = [tbl_addr[1] for x in cells if (tbl_addr := tbl_address(x)) and tbl_addr[0] == disc_sht ]
-
-            ndx = pd.Index(
-                [x for x in itertools.chain(*[y.split(':') for y in filter_cells]) if predicate(x)]
-            )
-            db = (
-                ndx.str.extract(cell_pattern, expand=True)
-                .set_index(ndx)
-                .assign(
-                    row = lambda db: np.where(db.row.str.contains('$', regex=False), db.row, (db.row.astype(int) + row_offset).apply(str)),
-                    col = lambda db: np.where(db.col.str.contains('$', regex=False), db.col, (db.col.apply(ord) + col_offset).apply(chr))
+            try:
+                filter_rng, filter_sht, filter_cells = zip(
+                    *[
+                        (x, *tbl_addr) for x in cells 
+                        if (tbl_addr := tbl_address(x)) and tbl_addr[0] in disc_sht 
+                    ]
                 )
+            except ValueError:
+                answ = {}
+            else:
+                ndx = pd.Index(
+                    [x for x in itertools.chain(*[y.split(':') for y in filter_cells]) if predicate(x)]
+                )
+                db = (
+                    ndx.str.extract(cell_pattern, expand=True)
+                    .set_index(ndx)
+                    .assign(
+                        row = lambda db: np.where(db.row.str.contains('$', regex=False), db.row, (db.row.apply(lambda x: int(x.strip('$'))) + row_offset).apply(str)),
+                        col = lambda db: np.where(db.col.str.contains('$', regex=False), db.col, (db.col.apply(lambda x: ord(x.strip('$'))) + col_offset).apply(chr))
+                    )
+                )
+                db['cell'] = db.col + db.row
+                cells_map = db.cell.to_dict()
+                values = [':'.join(map(lambda x: cells_map.get(x, x), key.split(':'))) for key in filter_cells]
+                values = [(f"'{sht}'!" if sht else '') + value for sht, value in zip(filter_sht, values)]
+                answ = dict(zip(filter_rng, values))
+            return answ.get(cells[0], cells[0]) if bflag else answ
+    
+    def external_dependents(self, cells):
+        # TODO: Improve this method
+        reduce = lambda items: functools.reduce(lambda t, e: t.union(e) or t, items, set())
+        ws = self.parent
+        wb = ws.parent
+        external_links = wb.links.keys() & set(f"'{ws.id}'!{x}" for x in df.loc[cells].code)
+        tables = reduce([wb.links[code] for code in external_links])
+        fmls = []
+        for tbl in tables:
+            sht_id, tbl_id = map(lambda x: f'#{x}', tbl_address(tbl))
+            df = wb[sht_id[1:]][tbl_id[1:]].data
+            dependents = reduce(df.loc[df.code.isin(external_links)].dependents)
+            fml_df = (
+                df.loc[df.code.isin(dependents), ['fml', 'code']]
+                .set_index('code')
+                .rename(index= lambda x: f"'{sht_id[1:]}'!{x}")
             )
-            db['cell'] = db.col + db.row
-            cells_map = db.cell.to_dict()
-            values = [':'.join(map(lambda x: cells_map.get(x, x), key.split(':'))) for key in filter_cells]
-            if disc_sht:
-                filter_cells = [f"'{disc_sht}'!{x}" for x in filter_cells]
-                values = [f"'{disc_sht}'!{x}" for x in values]
-            answ = dict(zip(filter_cells, values))
-            [answ.setdefault(x, x) for x in cells if x not in answ]
-            return answ[cells[0]] if bflag else answ
+            fmls.append(fml_df)
 
+        fmls = pd.concat(fmls)
 
-    def insert(self, excel_slice):
-        if not (data_rgn := self._cell_rgn(excel_slice)):
-            return
-        slice = f'{excel_slice}:{excel_slice}'.split(':', 2)[:2]
-        slice_type = excel_slice.replace(':', '')
-        if not (slice_type.isnumeric() and slice_type.isalpha()):    # insert columns / rows
-            if slice_type.isnumeric():    # insert rows
-                field = 'row_offset'
-                fnc = int
-            else:                           # insert columns
-                field = 'col_offset'
-                fnc = ord
-
-            nitems = fnc(slice[1]) - fnc(slice[0]) + 1
-            kwargs = {field: nitems}
-            # ins_point = fnc(slice[0])
-
-            # modificaci+on data range
-            lcell, rcell = self.data_rng.split(':')
-            rcell = self.offset_rng(rcell, **kwargs)
-            self.data_rng = f'{lcell}:{rcell}'
-
-            # modificación del índice del tbl.data frame (cells labels)
-
-            cmp = lambda x: '{0: >4s}{1}'.format(*cell_address(x))
-            mask = self.data.index.isin(self._cell_rgn(self.data_rng)) & (self.data.index.map(cmp) >= cmp(data_rgn[0]))
-
-            codes_map = self.data.loc[mask].code.to_dict()
-            ndx = list(codes_map.keys())
-            cells_map = self.offset_rng(ndx, **kwargs)
-
-            self.data.rename(index=cells_map, inplace=True)
-            ws = self.parent
-            ws_id, ws_name = ws.id, ws.title
-            to_broadcast = {
-                f"'{ws_id}'!{code}": f"'{ws_name}'!{cells_map[key]}" 
-                for key, code in codes_map.items()
-                }
-            self.parent.broadcast_changes(to_broadcast, field='cell')
-        else:   # insert a range
-            pass
 
     def __getitem__(self, excel_slice: str|list[str]) -> pd.DataFrame:
         cell_rgn = self._cell_rgn(excel_slice)
@@ -987,6 +1051,13 @@ class ExcelTable(ExcelObject):
         excel_slice = self.data.loc[mask, :].index.tolist()
         df = self[excel_slice].fillna(0)
         return df
+
+    def _repr_html_(self):
+        all_cells = self._cell_rgn(self.data_rng)
+        t = pd.Series('', index=all_cells)
+        t[self.data.index] = self.data.value
+        data = self.excel_table(t)
+        return data._repr_html_()
 
 def test_Form2517():
         filename = r"C:\Users\agmontesb\Documents\DIAN\Renta2023\Reporte_Conciliación_Fiscal_F2517V6_AG2023_v1.0.1-2024\Reporte_Conciliación_Fiscal_F2517V6_AG2023_v1.0.1-2024.xlsm"
