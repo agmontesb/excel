@@ -216,41 +216,37 @@ class TestModTables:
         ins_slice = '6'
         ins_rng = [f"'{ws.title}'!A6"]
 
-        sht_id, tbl_id = '', ''
-        fnc = lambda: wb[sht_id][tbl_id]
-        tables = collections.defaultdict(fnc)
-        fmls = []
-        for tbl in ws.tables:
-            df = tbl.data
-            s = df.dependents
-            mask = ~s.isna()
-            dependents = reduce(s[mask].tolist())
-            fml_df = (
-                df.loc[df.code.isin(dependents), ['fml', 'code']]
-                .set_index('code')
-                .rename(index= lambda x: f"'{ws.id}'!{x}")
-            )
+        all_dep = pd.concat([
+            tbl.all_dependents(cells)
+            for tbl in ws.tables
+            if (cells := tbl.cells_in_data_rng(tbl.data.index.tolist()))
+        ])
 
-            external_links = wb.links.keys() & set(f"'{ws.id}'!{x}" for x in df.code)
-            ltables = reduce([wb.links[code] for code in external_links])
+        codes = set(all_dep.index)
+        dep_parts = all_dep.dependent.apply(lambda x: cell_pattern.match(x).groups()).tolist()
+        dep_df = (
+            pd.DataFrame([(f"'{sht}'!{tbl}", f'{tbl}{num}') for sht, tbl, num in dep_parts], columns=['tbl', 'code'])
+            .set_index('tbl')
+        )
+
+        fmls = []
+        for tbl_path, codes_df in dep_df.groupby(level=0):
+            sht_id, tbl_id = tbl_address(tbl_path)
+            tbl = wb['#' + sht_id]['#' + tbl_id]
+            codes = codes_df.code.to_list()
+            fml_df = (
+                tbl.data.loc[tbl.data.code.isin(codes), ['fml', 'code']]
+                .set_index('code')
+                .rename(index= lambda x: f"'{sht_id}'!{x}")
+            )
             fmls.append(fml_df)
-            for ltbl in ltables:
-                sht_id, tbl_id = map(lambda x: f'#{x}', tbl_address(ltbl))
-                df = tables[f"'{sht_id[1:]}'!{tbl_id[1:]}"].data
-                dependents = reduce(df.loc[df.code.isin(external_links)].dependents)
-                lfml_df = (
-                    df.loc[df.code.isin(dependents), ['fml', 'code']]
-                    .set_index('code')
-                    .rename(index= lambda x: f"'{sht_id[1:]}'!{x}")
-                )
-                fmls.append(lfml_df)
 
         fmls = pd.concat(fmls).drop_duplicates()
 
         fmls1 = []
         for tbl_code, fml in fmls.fml.items():
-            sht_id, tbl_id, _ = map(lambda x: f'#{x}', cell_pattern.match(tbl_code).groups())
-            ltbl = tables[f"'{sht_id[1:]}'!{tbl_id[1:]}"]
+            sht_id, tbl_id, _ = cell_pattern.match(tbl_code).groups()
+            ltbl = wb['#' + sht_id]['#' + tbl_id]
             fmls1.append(ltbl.encoder('decode', fml))
 
         # Insert a row
@@ -258,15 +254,15 @@ class TestModTables:
 
         fmls2 = []
         for tbl_code, fml in fmls.fml.items():
-            sht_id, tbl_id, _ = map(lambda x: f'#{x}', cell_pattern.match(tbl_code).groups())
-            ltbl = tables[f"'{sht_id[1:]}'!{tbl_id[1:]}"]
-            fmls2.append(ltbl.encoder('decode', fml))
+            sht_id, tbl_id, _ = cell_pattern.match(tbl_code).groups()
+            ltbl = wb['#' + sht_id]['#' + tbl_id]
+            fmls1.append(ltbl.encoder('decode', fml))
 
 
         flags = []
         for tbl_code, *fml_pair in zip(fmls.index, fmls1, fmls2):
-            sht_id, tbl_id, _ = map(lambda x: f'#{x}', cell_pattern.match(tbl_code).groups())
-            ltbl = tables[f"'{sht_id[1:]}'!{tbl_id[1:]}"]
+            sht_id, tbl_id, _ = cell_pattern.match(tbl_code).groups()
+            ltbl = wb['#' + sht_id]['#' + tbl_id]
 
             lst1, lst2 = map(rgn_pattern.findall, fml_pair)
 
