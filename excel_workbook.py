@@ -14,11 +14,16 @@ from typing import Protocol, Type
 
 from collections.abc import Callable
 from enum import Enum, Flag
+from enum import Enum, Flag
 
 TABLE_DATA_MAP = {
     'fml': str, 'dependents': object, 'res_order': int, 
     'ftype': str, 'value': object, 'code': str
 }
+
+class XlFlags(Flag):
+    ERROR_CLEAR = 1
+
 
 class XlFlags(Flag):
     ERROR_CLEAR = 1
@@ -33,6 +38,7 @@ class XlErrors(Enum):
   NULL_ERROR = "#NULL!"
   GETTING_DATA_ERROR = "#GETTING_DATA"
   SPILL_ERROR = "#SPILL!"
+  UNKNOWN_ERROR = "#UNKNOWN!"
   UNKNOWN_ERROR = "#UNKNOWN!"
   # Add more Excel error types here as needed
 
@@ -91,6 +97,7 @@ def excel_to_pandas_slice(excel_slice, axis, table_name, mask=None, withValues=F
     py_term = f"{table_name}[{prefix}]{suffix}"
     return py_term
 
+def pythonize_fml(fml: str, table_name: str, axis: None|Literal[0,1]=None, mask=None):
 def pythonize_fml(fml: str, table_name: str, axis: None|Literal[0,1]=None, mask=None):
     '''
     Convierte una fórmula de Excel a una fórmula de Python
@@ -334,6 +341,38 @@ class ExcelWorksheet(ExcelCollection):
                         tbl.parent._param_map.pop(err_cell)
 
 
+    def propagate_error(self, xl_error: XlErrors, codes: list[str] | None = None, reg_value=None):
+        assert reg_value is None or not isinstance(reg_value, XlErrors), 'reg_value must be None or not a XlErrors'
+        def register_code(tbl, xl_error, codes):
+                df = tbl.data
+                err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{self.title}'!{xl_error.code}"], default_value=xl_error)))
+                try:
+                    error_rec = df.loc[err_cell].copy()
+                except:
+                    # Si no existe código del error en la tabla, se crea un nuevo registro para el error
+                    error_rec = pd.Series(
+                        dict(fml=None, dependents=set(), res_order=0, ftype='$', value=err_value, code=err_code), 
+                        dtype=object
+                    )
+                # Se agrega el código de la celda al campo dependents del registro del error
+                error_rec.dependents.update(tbl_address(x)[-1] for x in codes)
+                df.loc[err_cell] = error_rec
+        
+        def unregister_code(tbl, xl_error, codes):
+                df = tbl.data
+                err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{self.title}'!{xl_error.code}"], default_value=xl_error)))
+                error_rec = df.loc[err_cell].copy()
+                # Se agrega el código de la celda al campo dependents del registro del error
+                error_rec.dependents.difference_update(tbl_address(x)[-1] for x in codes)
+                df.loc[err_cell] = error_rec
+                if not error_rec.dependents:
+                    df.drop(err_cell)
+                    wb.links[err_code].difference_update([f"'{tbl.parent.id}'!{tbl.id}"])
+                    if not wb.links[err_code]:
+                        wb.links.pop(err_code)
+                        tbl.parent._param_map.pop(err_cell)
+
+
         wb = self.parent
         to_process = {}
         if codes is None:
@@ -351,11 +390,15 @@ class ExcelWorksheet(ExcelCollection):
             # Si codes no es None, se debe registrar el codigo de la celda en los dependents de la
             # tabla correspondiente
             
+            
             for code in codes:
+                ws_id, tbl_id, _ = cell_pattern.match(code).groups()
                 ws_id, tbl_id, _ = cell_pattern.match(code).groups()
                 tbl = wb['#' + ws_id]['#' + tbl_id]
                 # Se consigna para procesamiento en la clave de la tabla correspondiente
                 to_process.setdefault(tbl, []).append(code)
+            fnc = register_code if reg_value is None else unregister_code
+            [fnc(tbl, xl_error, codes) for tbl, codes in to_process.items()]
             fnc = register_code if reg_value is None else unregister_code
             [fnc(tbl, xl_error, codes) for tbl, codes in to_process.items()]
 
@@ -377,7 +420,9 @@ class ExcelWorksheet(ExcelCollection):
                     tbl = wb['#' + sht_id]['#' + tbl_id]
                     to_process.setdefault(tbl, []).append(dep)
         reg_value = reg_value or xl_error
+        reg_value = reg_value or xl_error
         for tbl, cells in propagate_error.items():
+            tbl.data.loc[cells, 'value'] = reg_value
             tbl.data.loc[cells, 'value'] = reg_value
 
     def insert(self, cell_slice, from_delete=False):
@@ -451,6 +496,7 @@ class ExcelWorksheet(ExcelCollection):
 
         nitems = fnc(excel_slice[1]) - fnc(excel_slice[0]) + 1
         kwargs = {field: nitems}
+        kwargs = {field: nitems}
         kwargs['disc_cell'] = f'A{excel_slice[0]}' if is_numeric else f'{excel_slice[0]}1'
 
         all_cells = [f'{chr(col)}{row}' for col in range(cmin, cmax + 1) for row in range(rmin, rmax + 1)]
@@ -462,12 +508,18 @@ class ExcelWorksheet(ExcelCollection):
                 continue
             df = tbl.data
             cells = list(set(cells) & set(df.index))
+            cells = list(set(cells) & set(df.index))
             codes = df.loc[cells].code.tolist()
             off_cells = tbl.offset_rng(cells, **kwargs).values()
             off_codes = df.loc[off_cells].code.tolist()
             rgn_codes = dict(zip(codes, off_codes))
             err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{ws.title}'!{XlErrors.REF_ERROR.code}"], default_value=XlErrors.REF_ERROR)))
+            off_cells = tbl.offset_rng(cells, **kwargs).values()
+            off_codes = df.loc[off_cells].code.tolist()
+            rgn_codes = dict(zip(codes, off_codes))
+            err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{ws.title}'!{XlErrors.REF_ERROR.code}"], default_value=XlErrors.REF_ERROR)))
             changes = {code: err_code for code in codes}
+            tbl.set_field(changes, field='code', rng_codes=rgn_codes)
             tbl.set_field(changes, field='code', rng_codes=rgn_codes)
             changes = {f"'{ws.id}'!{code}": err_code for code in codes}
             self.broadcast_changes(changes, field='code')
@@ -477,6 +529,22 @@ class ExcelWorksheet(ExcelCollection):
         assert not df.index.isin(cells).any(), 'Insert: Not all cells has been displaced'
         self.insert(cell_slice, from_delete=True)
         self.propagate_error(XlErrors.REF_ERROR)
+        for tbl in self.tables:
+            if not (cells := tbl.cells_in_data_rng(all_cells)):
+                continue
+            cells = list(set(cells) & set(tbl.data.index))
+            df = tbl.data.loc[cells]
+            codes = df.code.tolist()
+            mask =  ~df.dependents.isna()
+            all_dependents = set(itertools.chain(*df.loc[mask].dependents.tolist()))
+            all_dependents = all_dependents - set(codes)
+            mask = tbl.data.code.isin(all_dependents) & ~tbl.data.value.isin(list(XlErrors))
+            if mask.any():
+                changed = tbl.data.loc[mask].code.tolist()
+                tbl.changed.extend(changed)
+                tbl.recalculate(recalc=True)
+        pass
+
         for tbl in self.tables:
             if not (cells := tbl.cells_in_data_rng(all_cells)):
                 continue
@@ -514,6 +582,7 @@ class ExcelWorksheet(ExcelCollection):
         cmin, cmax = ord(cmin), ord(cmax)
         all_cells = [f'{chr(col)}{row}' for row in range(rmin, rmax + 1) for col in range(cmin, cmax + 1)]
         t = pd.Series('', index=all_cells)
+        if (params := [x for x in self.parameters() if not x.startswith('Z')]):
         if (params := [x for x in self.parameters() if not x.startswith('Z')]):
             t[params] = self.parameters(*params)
         for tbl in self.tables:
@@ -705,6 +774,7 @@ class ExcelTable(ExcelObject):
         if fmls:
             self.set_fmls(fmls, values, recalc)
         self.set_values(values, recalc=recalc)
+        self.set_values(values, recalc=recalc)
         pass
 
     def next_id(self):
@@ -736,6 +806,7 @@ class ExcelTable(ExcelObject):
             .sort_index()
         )
         self.data.index.rename('cell', inplace=True)
+        df = self.data
         df = self.data
         self.parent.register_tbl(self)
         values = values or {}
@@ -770,7 +841,9 @@ class ExcelTable(ExcelObject):
         self.parent._objects.pop(ndx)
 
     def set_field(self, changes: dict[str, Any], *, field: Literal['code', 'cell']= 'code', rng_codes: dict[str, str] | None = None):
+    def set_field(self, changes: dict[str, Any], *, field: Literal['code', 'cell']= 'code', rng_codes: dict[str, str] | None = None):
         assert (df := self.data) is not None, 'Table not initialized'
+        rng_codes = rng_codes or {}
         rng_codes = rng_codes or {}
         ws = self.parent
         if field == 'code':
@@ -847,6 +920,24 @@ class ExcelTable(ExcelObject):
             self.data = df
         values = {key: values[key] for key in keys}
         changed = keys
+        keys = self.cells_in_data_rng(values.keys())
+        if not keys:
+            return
+        if (to_init := list(set(values.keys()) - set(df.index))):
+            value_rec = pd.Series(
+                dict(fml=None, dependents=None, res_order=0, ftype='$', value=None, code=''), 
+                dtype=object
+            )
+            df = pd.concat(
+                [
+                    df,
+                    pd.DataFrame(value_rec.to_dict(), index=pd.Index(to_init, name='cell'))
+                ]
+            )
+            df.loc[to_init, 'code'] = [f'{self.next_id()}' for _ in range(len(to_init))]
+            self.data = df
+        values = {key: values[key] for key in keys}
+        changed = keys
         if (parameters:= values.keys() & set(self.parent.parameters()) and field == 'values'):
             warnings.warn(
                 f"You are modifying this parameter(s): {parameters}. "
@@ -855,6 +946,7 @@ class ExcelTable(ExcelObject):
                 f"ws.parameters(param1=value1, param2=value2)",
                 UserWarning
             )
+        if changed or self.changed:
         if changed or self.changed:
             self.changed.extend(df.loc[changed].code.tolist())
             df.loc[changed, 'value'] = pd.Series(values, dtype=TABLE_DATA_MAP['value'])
@@ -899,10 +991,13 @@ class ExcelTable(ExcelObject):
         for frst_item, scnd_item, fml in formulas:
             pyfml = self.formula_translation(frst_item, scnd_item, fml, feval=feval)
             pyfmls.extend(pyfml)
+            pyfml = self.formula_translation(frst_item, scnd_item, fml, feval=feval)
+            pyfmls.extend(pyfml)
             # print(f'{frst_item} {scnd_item} {fml} ==> {pyfml}')
 
         return pyfmls
 
+    def formula_translation(self, frst_item, scnd_item, fml, table_name='tbl', feval=False):
     def formula_translation(self, frst_item, scnd_item, fml, table_name='tbl', feval=False):
         '''
         Traduce una fórmula de Excel a una fórmula de Python
@@ -915,8 +1010,13 @@ class ExcelTable(ExcelObject):
             case (str(frst_item), str(scnd_item), fml):  # cell fml
                 # to_pythonize = f'{scnd_item}{frst_item}{fml}'
                 mask = [(f'{scnd_item}{frst_item}', scnd_item)]
+                # to_pythonize = f'{scnd_item}{frst_item}{fml}'
+                mask = [(f'{scnd_item}{frst_item}', scnd_item)]
                 axis = None            # To avoid FutureWarning
             case (str(frst_item), list(scnd_item), fml) if frst_item.isnumeric():  # row fml
+                # to_pythonize = f'{scnd_item[0]}{frst_item}{fml}'
+                scnd_item = sorted(scnd_item)
+                mask = [(f'{col}{frst_item}', col) for col in scnd_item]
                 # to_pythonize = f'{scnd_item[0]}{frst_item}{fml}'
                 scnd_item = sorted(scnd_item)
                 mask = [(f'{col}{frst_item}', col) for col in scnd_item]
@@ -925,11 +1025,20 @@ class ExcelTable(ExcelObject):
                 # to_pythonize = f'{frst_item}{scnd_item[0]}{fml}'
                 scnd_item = sorted(scnd_item, key=lambda x: int(x))
                 mask = [(f'{frst_item}{row}', row) for row in scnd_item]
+                # to_pythonize = f'{frst_item}{scnd_item[0]}{fml}'
+                scnd_item = sorted(scnd_item, key=lambda x: int(x))
+                mask = [(f'{frst_item}{row}', row) for row in scnd_item]
                 axis = 1
             case _:  # (list(frst_item), list(scnd_item), fml)    # range fml
                 to_pythonize = ''
                 mask = None
                 axis = None
+        py_fml = pythonize_fml(fml, table_name=table_name, axis=axis)
+        frst_item = mask[0][1]
+        if feval:
+            py_fml = py_fml.lstrip('=')
+            return [(cell, py_fml.replace(frst_item, x)) for cell, x in mask]
+        return [cell + py_fml.replace(frst_item, x) for cell, x in mask]
         py_fml = pythonize_fml(fml, table_name=table_name, axis=axis)
         frst_item = mask[0][1]
         if feval:
@@ -1021,10 +1130,32 @@ class ExcelTable(ExcelObject):
             if changed:
                 dependents = df.loc[changed].dependents
                 mask = ~dependents.isna()
+                mask = ~dependents.isna()
                 if mask.any():
                     changed = list(functools.reduce(lambda t, e: t.union(e), dependents[mask], set()))
                     grouped_changed = df.loc[changed, ['res_order']].groupby(by='res_order').groups.items()
                     [to_report.setdefault(k, set()).update(v) for k, v in grouped_changed]
+
+    def evaluate(tbl, formulas):
+        answer = []
+        for cell, py_fml in formulas:
+            try:
+                value = eval(py_fml, globals(), locals())
+            except ZeroDivisionError as e:
+                value = XlErrors.DIV_ZERO_ERROR
+            except TypeError as e:
+                value = XlErrors.VALUE_ERROR
+            except NameError as e:
+                value = XlErrors.NAME_ERROR
+            except Exception as e:
+                value = XlErrors.UNKNOWN_ERROR
+
+            try:
+                value = value.flatten()[0]
+            except AttributeError:
+                pass
+            answer.append((cell, value))
+        return answer
 
     def evaluate(tbl, formulas):
         answer = []
@@ -1055,6 +1186,12 @@ class ExcelTable(ExcelObject):
             error_origens = set()
             if (mask := df.index.isin([x.code for x in list(XlErrors)])).any():
                 [error_origens.update(x) for x in df[mask].dependents.to_list()]
+            ws = tbl.parent
+            df = tbl.data
+            # Se obtienen los códigos de las celdas que tienen un error
+            error_origens = set()
+            if (mask := df.index.isin([x.code for x in list(XlErrors)])).any():
+                [error_origens.update(x) for x in df[mask].dependents.to_list()]
             changed, tbl.changed = tbl.changed, []
             values = {}
             changed_cells, f_changed = tbl.cells_to_calc(changed), None
@@ -1068,7 +1205,11 @@ class ExcelTable(ExcelObject):
                     code: value 
                     for code, value in tbl.data.loc[mask, ['code', 'value']].values
                     if code in error_origens or not isinstance(value, XlErrors)
+                    if code in error_origens or not isinstance(value, XlErrors)
                 }, dtype=TABLE_DATA_MAP['value'])
+                changed = f_changed = s0.index.tolist()
+                if not f_changed:
+                    continue
                 changed = f_changed = s0.index.tolist()
                 if not f_changed:
                     continue
@@ -1078,8 +1219,12 @@ class ExcelTable(ExcelObject):
                 formulas = tbl.ordered_formulas(changed, feval=True)
                 items = tbl.evaluate(formulas)
                 cells, vals = map(list, zip(*items))
+                items = tbl.evaluate(formulas)
+                cells, vals = map(list, zip(*items))
                 s1 = pd.Series(vals, index=tbl.data.loc[cells].code, dtype=TABLE_DATA_MAP['value'])     # New values
                 errors_mask = s1.isin(list(XlErrors))
+                mask = ~errors_mask & (s0 != s1[s0.index])
+                # Celdas que al recalcular se generan nuevos errores
                 mask = ~errors_mask & (s0 != s1[s0.index])
                 # Celdas que al recalcular se generan nuevos errores
                 if errors_mask.any():
@@ -1091,9 +1236,19 @@ class ExcelTable(ExcelObject):
                     ]
                     for err, codes in to_propagate.items():
                         tbl.parent.propagate_error(err, codes=codes)
+                        tbl.parent.propagate_error(err, codes=codes)
                     pass
                 vals = s1[mask]
                 f_changed = vals.index.tolist()
+                if not f_changed:
+                    continue
+                # Celdas con error que al recalcular se elimina el error
+                if (error_clear := vals[vals.index.isin(error_origens)].index.tolist()):
+                    errors = s0[error_clear].to_dict()
+                    xl_errors = {}
+                    [xl_errors.setdefault(y, []).append(f"'{tbl.parent.id}'!{x}") for x, y in errors.items()]
+                    for err, codes in xl_errors.items():
+                        tbl.parent.propagate_error(err, codes=codes, reg_value=XlFlags.ERROR_CLEAR)
                 if not f_changed:
                     continue
                 # Celdas con error que al recalcular se elimina el error
@@ -1288,6 +1443,12 @@ class ExcelTable(ExcelObject):
                     predicate = lambda x: ord(cell_address(x)[1]) >= ord(cell_address(disc_cell)[1])
                 else:
                     predicate = lambda x: '{0: >4s}{1}'.format(*cell_address(x)) >= '{0: >4s}{1}'.format(*cell_address(disc_cell))
+                if col_offset == 0 and row_offset:
+                    predicate = lambda x: int(cell_address(x)[0]) >= int(cell_address(disc_cell)[0])
+                if col_offset and row_offset == 0:
+                    predicate = lambda x: ord(cell_address(x)[1]) >= ord(cell_address(disc_cell)[1])
+                else:
+                    predicate = lambda x: '{0: >4s}{1}'.format(*cell_address(x)) >= '{0: >4s}{1}'.format(*cell_address(disc_cell))
 
             try:
                 filter_rng, filter_sht, filter_cells = zip(
@@ -1361,6 +1522,8 @@ class ExcelTable(ExcelObject):
     def __setitem__(self, excel_slice, value):
         cell_rgn = self._cell_rgn(excel_slice)
         self.data.loc[cell_rgn, 'value'] = np.array(value).flatten()
+        codes = self.encoder('encode', cell_rgn)
+        self.changed.extend(codes)
         codes = self.encoder('encode', cell_rgn)
         self.changed.extend(codes)
 
