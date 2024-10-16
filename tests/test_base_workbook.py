@@ -1,12 +1,13 @@
 import sys
 import os
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pytest
 import openpyxl as px
 import pandas as pd
+import itertools
 import functools
-import collections
 
 from excel_workbook import (
     ExcelWorkbook, ExcelTable, 
@@ -15,8 +16,65 @@ from excel_workbook import (
     )
 
 
+class TableComparator:
+    sort_fnc = staticmethod(lambda x: x.map(lambda x: '{0}{2: >4s}{1: >3s}'.format(*cell_pattern.match(x).groups())))
+
+    def __init__(self, df):
+        self.df = (
+            df
+            .assign(dependents=lambda db: df.dependents.apply(lambda items: str(items)))
+        )
+
+    def difference(self, other, fields=None):
+        df = self.__sub__(other, fields=fields)
+        return df
+    
+    def symmetric_difference(self, other, fields=None):
+        return self.__xor__(other, fields=fields)
+
+    def __or__(self, other, fields=None):
+        df = (
+            pd.concat([self.df, other.df])
+            .drop_duplicates(subset=fields)
+            .assign(dependents=lambda db: db.dependents.apply(lambda x: eval(x) if x != 'nan' else set()))
+            .sort_index(key=self.sort_fnc)
+        )
+        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
+        return df
+    
+    def __and__(self, other):
+        x = self ^ other
+        df = self.df.loc[~self.df.index.isin(x.index)]
+        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
+        df = df.sort_index(key=self.sort_fnc)
+        return df
+    
+    def __sub__(self, other, fields=None):
+        x = self.__xor__(other, fields=fields)
+        df = x.loc[x.index.isin(self.df.index)]
+        df = df.drop_duplicates(subset=['code'], keep='first')
+        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
+        df = df.sort_index(key=self.sort_fnc)
+        return df
+    
+    def __xor__(self, other, fields=None):
+        df = (
+            pd.concat([self.df, other.df])
+            .drop_duplicates(subset=fields, keep=False)
+            .assign(dependents=lambda db: db.dependents.apply(lambda x: eval(x) if x != 'nan' else set()))
+            .sort_index(key=self.sort_fnc)
+        )
+        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
+        return df
+    
+    def __eq__(self, other):
+        df = self ^ other
+        return df.empty
+
+
 @pytest.fixture
 def base_workbook():
+    case = 1
     # Create a base workbook for testing
     filename = r"C:\Users\agmontesb\Downloads\excel_module_test.xlsx"
     wb = px.load_workbook(filename)
@@ -28,13 +86,13 @@ def base_workbook():
     wsheet = excel_wb.create_worksheet(ws_name)
 
     # Tabla 1
-    ws_range = "G4:I9"
+    ws_range = ["G4:I9", "F3:I9"][case]
     fmls, values = data_in_range(ws, ws_range)
     sh1_tbl1 = ExcelTable(wsheet, 'sh1_tbl1', ws_range, fmls, values, recalc=True)
     # m_sh1_tbl1 = sh1_tbl1.minimun_table()
 
     # Tabla 2
-    ws_range = "G13:H15"
+    ws_range = ["G11:H15", "F12:H15"][case]
     fmls, values = data_in_range(ws, ws_range)
     sh1_tbl2 = ExcelTable(wsheet, 'sh1_tbl2', ws_range, fmls, values, recalc=True)
     m_sh1_tbl2 = sh1_tbl2.minimun_table()
@@ -44,13 +102,13 @@ def base_workbook():
     wsheet = excel_wb.create_worksheet(ws_name)
 
     # Tabla 1
-    ws_range = "F4:H9"
+    ws_range = ["F4:H9", "E3:H9"][case]
     fmls, values = data_in_range(ws, ws_range)
     sh2_tbl1 = ExcelTable(wsheet, 'sh2_tbl1', ws_range, fmls, values, recalc=True)
     # m_sh2_tbl1 = sh2_tbl1.minimun_table()
 
     # Tabla 2
-    ws_range = "F13:H17"
+    ws_range = ["F13:H17", "E12:H17"][case]
     fmls, values = data_in_range(ws, ws_range)
     sh2_tbl2 = ExcelTable(wsheet, 'sh2_tbl2', ws_range, fmls, values, recalc=True)
     # m_sh2_tbl2 = sh2_tbl2.minimun_table()
@@ -60,7 +118,7 @@ def base_workbook():
     wsheet = excel_wb.create_worksheet(ws_name)
 
     # Tabla 1
-    ws_range = "F3:H8"
+    ws_range = ["F3:H8", "E2:H8"][case]
     fmls, values = data_in_range(ws, ws_range)
     sh3_tbl1 = ExcelTable(wsheet, 'sh3_tbl1', ws_range, fmls, values, recalc=True)
     # m_sh3_tbl1 = sh3_tbl1.minimun_table()
@@ -271,6 +329,65 @@ class TestModTables:
             )
         assert all(flags)
 
+        pass
 
+
+class TestSetRecordsTable:
+
+    def test_field_fml(self, base_workbook):
+        field = 'fml'
+        # values = dict(F13='=+F15+F12', G12='=+E12&F12')   # Fórmula con referencia a celda vacía.
+        # values = dict(F13='=F5 + G13', F15='=+F14+G14')   # Creación de nuevo enlace externno
+        # values = dict(H13='=+$G$2*F13 + 75', F17='=+F16+F15+2*F14', G16='=F9 + F13 + F14')  # Cambiar fórmulas en celdas existentes  
+        # values = dict(F12='=1+2', G12='=G14+F17', H12='=F12+G12')  # Asignar fórmulas en celdas vacías 
+        # values = dict(F13='=1+2', G14='=F13+G15')  # Asignar fórmulas en celdas con valores
+
+    def test_field_value1(self, base_workbook):
+        field = 'value'
+        wb = base_workbook
+        ws = wb['Parameters and inner links']
+        tbl = ws['sh2_tbl2']
+
+        values = dict(F13=55, F15=80, G15=22)  # Cambiar valores en celdas existentes
+        cells = list(values.keys())
+        codes = [tbl.encoder('encode', x) for x in cells]
+
+        df1 = TableComparator(tbl.data)
+        tbl.set_records(values, field=field)
+        tbl.recalculate(recalc=True)
+        df2 = TableComparator(tbl.data)
+
+        df = tbl.data
+
+        flds = df.columns.tolist()
+        flds.remove('value')
+        diff = df2.symmetric_difference(df1, fields=flds)
+        assert diff.empty, 'Esta peración solo cambia valore en el campo "value"'
+
+        diff = df2 ^ df1
+        assert set(diff.index.unique()) & set(cells) == set(cells), 'Al menos las celdas reportadas cambian'
+
+        all_dependents = set(tbl.get_cells_to_calc(codes))
+        all_codes = set(diff.code.to_list())
+        assert all_codes.issubset(all_dependents), 'Faltan las "cell" que no cambian de valor porque por ejemplo en la fórmula se multiplica por cero'
 
         pass
+
+    def test_field_value2(self, base_workbook):
+        field = 'value'
+        wb = base_workbook
+        ws = wb['Parameters and inner links']
+        tbl = ws['sh2_tbl2']
+
+        values = dict(F12=35, G12=80, H12=22)  # Asignar valores en celdas vacías 
+
+        df1 = TableComparator(tbl.data)
+        tbl.set_records(values, field=field)
+        tbl.recalculate(recalc=True)
+        df2 = TableComparator(tbl.data)
+
+        cells = list(values.keys())
+        codes = [tbl.encoder('encode', x) for x in cells]
+
+        
+        # values = dict(G16=333, H13=222)  # Asignar valores en celdas con fórmulas
