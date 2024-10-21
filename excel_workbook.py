@@ -1351,9 +1351,14 @@ class ExcelTable(ExcelObject):
                     grouped_changed = {key: set(grp) for key, grp in df.loc[changed, ['res_order']].groupby(by='res_order').groups.items()}
                     [to_report.setdefault(k, set()).update(v) for k, v in grouped_changed.items()]
 
-    def evaluate(tbl, formulas):
+    def evaluate(tbl, *formulas, pythonize=True):
+        if pythonize:
+            formulas = [
+                pythonize_fml(fml, table_name='tbl', axis=None).lstrip('=+')
+                for fml in formulas
+            ]
         answer = []
-        for cell, py_fml in formulas:
+        for py_fml in formulas:
             try:
                 value = eval(py_fml, globals(), locals())
             except ZeroDivisionError as e:
@@ -1369,7 +1374,7 @@ class ExcelTable(ExcelObject):
                 value = value.flatten()[0]
             except AttributeError:
                 pass
-            answer.append((cell, value))
+            answer.append(value)
         return answer
 
     def recalculate(tbl, recalc:bool=False):
@@ -1400,9 +1405,8 @@ class ExcelTable(ExcelObject):
                 if res_order == 0:
                     values.update(s0.to_dict())
                     continue
-                formulas = tbl.ordered_formulas(changed, feval=True)
-                items = tbl.evaluate(formulas)
-                cells, vals = map(list, zip(*items))
+                cells, formulas = map(list, zip(*tbl.ordered_formulas(changed, feval=True)))
+                vals = tbl.evaluate(*formulas, pythonize=False)
                 s1 = pd.Series(vals, index=tbl.data.loc[cells].code, dtype=TABLE_DATA_MAP['value'])     # New values
                 errors_mask = s1.isin(list(XlErrors))
                 mask = ~errors_mask & (s0 != s1[s0.index])
