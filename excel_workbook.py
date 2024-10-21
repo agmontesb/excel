@@ -782,6 +782,10 @@ class ExcelTable(ExcelObject):
         return df
     
     def set_records(tbl, values, field='fml'):
+        def cell_list(fml):
+            components = [x.replace('$', '').split(':') for x in set(rgn_pattern.findall(fml or ''))]
+            return list(set(itertools.chain(*components)))
+
         keys = tbl.cells_in_data_rng(values.keys())
         if not keys:
             return
@@ -808,9 +812,8 @@ class ExcelTable(ExcelObject):
                 .dependents
                 .apply(lambda x: x.difference_update(to_convert_coded))
             )
-
-            df.loc[keys, 'fml'] = None
-            df.loc[keys, 'res_order'] = 0
+            # Se convierten las cells de fml a values:  # falta agregar ftype =
+            df.loc[keys, ['fml', 'res_order', 'ftype']] = [None, 0, '#']
 
         # 2 - Records no existentes que van a ser creados por los valores recibidos
         if (to_init := list(set(keys) - set(df.index))):
@@ -819,6 +822,7 @@ class ExcelTable(ExcelObject):
         # 3 - Cuando field == 'fml', se agregan records correspondientes a celdas vacías en la 
         # tabla o a enlaces externos/parámetros.
         if field == 'fml':
+            cells_in_fmls = set(itertools.chain(*[cell_list(x) for x in values.values()]))
             # Se entra a enlazar las celdas aguas abajo para las nuevas fórmulas
             value_cells = (
                 pd.Series(values, name=field, dtype=TABLE_DATA_MAP[field])
@@ -831,10 +835,13 @@ class ExcelTable(ExcelObject):
             if cell_links:
                 # Se ubican las celdas vacías que enlazan las fórmulas
                 empty_cells = tbl.cells_in_data_rng(list(cell_links))
+                links = list(cell_links.difference(empty_cells))
                 if empty_cells:
+                    # Solo se crean las celdas vacías que aparecen en la fórmula para efectos de 
+                    # que existan los códigos al momento de codificarlas.
+                    empty_cells = list(set(empty_cells) & cells_in_fmls)
                     df = tbl.add_empty_cells(empty_cells, data=df)
                 # Enlacecs externos/parámetros
-                links = list(cell_links.difference(empty_cells))
                 if links:
                     df = tbl.add_empty_cells(links, data=df)
                     ws = tbl.parent
@@ -866,7 +873,7 @@ class ExcelTable(ExcelObject):
         # 2. Si se van a introducir valores en las celdas afectadas (field == 'value')
         # pero alguna de ellas tenía una fórmula (bFlag == True)
 
-        if field == 'fml' or bFlag:
+        if (field == 'fml' or bFlag) and changed:
             up_codes = set(tbl.get_cells_to_calc(changed, data=df))
             # tbl.encoder('decode', list(up_codes))
             # up_codes
@@ -955,6 +962,22 @@ class ExcelTable(ExcelObject):
         # tbl.recalculate(recalc=True)
 
     def add_empty_cells(tbl, to_init: list[str], data=None):
+        def is_cell_in_fml(cell, fml):
+            code = lambda cell: '{0:_>3s}{1:0>6s}'.format(*cell_pattern.match(cell).groups()[1:])
+            if fml is None:
+                return False
+            components = [x.replace('$', '').split(':') for x in set(rgn_pattern.findall(fml))]
+            if not any(x == cell for x in itertools.chain(*components)):
+                cell_code = code(cell)
+                rng_limits = (
+                    [code(x) for x in pair]
+                    for pair in components if len(pair) == 2
+                )
+                # mask = [t[0] <= cell_code <= t[1] for t in rng_limits]
+                # print(f'{cell_code=}, {mask=}')
+                return any(t[0] <= cell_code <= t[1] for t in rng_limits)
+            return True
+
         value_rec = pd.Series(
             dict(fml=None, dependents=None, res_order=0, ftype='#', value=EMPTY_CELL, code=''), 
             dtype=object
@@ -968,6 +991,14 @@ class ExcelTable(ExcelObject):
             ]
         )
         df.loc[to_init, 'code'] = [f'{tbl.next_id()}' for _ in range(len(to_init))]
+        fmls = (
+            df.loc[:, ['fml', 'code']]
+            .assign(fml=lambda db: db.fml.apply(lambda x: tbl.encoder('decode', x if isinstance(x, str) else '' , df=df)))
+            # .loc[to_init]
+        )
+        for cell in to_init:
+            mask = fmls.fml.apply(lambda fml: is_cell_in_fml(cell, fml))
+            df.loc[[cell], 'dependents'] = [set(df.loc[mask].code)]
         if bflag:
             tbl.data = df
         else:
@@ -1184,7 +1215,6 @@ class ExcelTable(ExcelObject):
         for frst_item, scnd_item, fml in formulas:
             pyfml = self.formula_translation(frst_item, scnd_item, fml, feval=feval)
             pyfmls.extend(pyfml)
-            # print(f'{frst_item} {scnd_item} {fml} ==> {pyfml}')
 
         return pyfmls
 
@@ -1367,7 +1397,7 @@ class ExcelTable(ExcelObject):
                 changed = f_changed = s0.index.tolist()
                 if not f_changed:
                     continue
-                if not res_order:
+                if res_order == 0:
                     values.update(s0.to_dict())
                     continue
                 formulas = tbl.ordered_formulas(changed, feval=True)
@@ -1661,11 +1691,22 @@ class ExcelTable(ExcelObject):
 
     def __getitem__(self, excel_slice: str|list[str]) -> pd.DataFrame:
         cell_rgn = self._cell_rgn(excel_slice)
-        df = self.excel_table(self.data.loc[cell_rgn, 'value'])
+        value_cells = list(set(cell_rgn) & set(self.data.index))
+        empty_cells =list(set(cell_rgn) - set(value_cells))
+        data = pd.concat([
+            self.data.loc[value_cells, 'value'],
+            pd.Series(
+                EMPTY_CELL, 
+                index=pd.Index(empty_cells, name='cell'), 
+                dtype=TABLE_DATA_MAP['value'],
+                name='value'
+            )
+        ])
+        df = self.excel_table(data)
         return df
 
     def __setitem__(self, excel_slice, value):
-        cell_rgn = self._cell_rgn(excel_slice)
+        cell_rgn = list(set(self._cell_rgn(excel_slice)) & set(self.data.index))
         self.data.loc[cell_rgn, 'value'] = np.array(value).flatten()
         codes = self.encoder('encode', cell_rgn)
         self.changed.extend(codes)
