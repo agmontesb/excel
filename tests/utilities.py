@@ -60,3 +60,25 @@ class TableComparator:
     
     def __ne__(self, value: object) -> bool:
         return not self.__eq__(value)
+    
+
+def excel_df(tbl_str, row_ini, col_ini):
+    '''
+    Convierte el copy/paste de una tabla de excel a un pd.Series donde el index son las
+    direcciones de las celdas y el valor es el str(value_cell)
+    tbl_str: str. Copy/paste tabla excel.
+    row_ini: str. Fila (row) superior izquierda de la tabla.
+    col_ini: str. Columna (col) superior izquierda de la tabla.
+    '''
+    lst = [x.split('\t') for x in tbl_str.strip().split('\n')]
+    ndx1, ndx2 = int(row_ini), int(row_ini) + len(lst)   
+    col1, col2 = ord(col_ini), ord(col_ini) + len(lst[0])
+    df = (
+        pd.DataFrame(lst, index=pd.RangeIndex(ndx1, ndx2), columns=[chr(x) for x in range(col1, col2)])
+        .unstack()
+        .to_frame()
+        .rename(columns={0:'value'})
+        .assign(cell=lambda db: db.index.map(lambda x: x[0] + str(x[1])))
+        .set_index('cell')
+    )
+    return df.value

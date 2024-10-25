@@ -12,65 +12,10 @@ import functools
 from excel_workbook import (
     ExcelWorkbook, ExcelTable, 
     cell_address, cell_pattern, 
-    data_in_range, tbl_address, rgn_pattern 
+    data_in_range, tbl_address, rgn_pattern,
+    CIRCULAR_REF, 
     )
-
-
-class TableComparator:
-    sort_fnc = staticmethod(lambda x: x.map(lambda x: '{0}{2: >4s}{1: >3s}'.format(*cell_pattern.match(x).groups())))
-
-    def __init__(self, df):
-        self.df = (
-            df
-            .assign(dependents=lambda db: df.dependents.apply(lambda items: str(items)))
-        )
-
-    def difference(self, other, fields=None):
-        df = self.__sub__(other, fields=fields)
-        return df
-    
-    def symmetric_difference(self, other, fields=None):
-        return self.__xor__(other, fields=fields)
-
-    def __or__(self, other, fields=None):
-        df = (
-            pd.concat([self.df, other.df])
-            .drop_duplicates(subset=fields)
-            .assign(dependents=lambda db: db.dependents.apply(lambda x: eval(x) if x != 'nan' else set()))
-            .sort_index(key=self.sort_fnc)
-        )
-        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
-        return df
-    
-    def __and__(self, other):
-        x = self ^ other
-        df = self.df.loc[~self.df.index.isin(x.index)]
-        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
-        df = df.sort_index(key=self.sort_fnc)
-        return df
-    
-    def __sub__(self, other, fields=None):
-        x = self.__xor__(other, fields=fields)
-        df = x.loc[x.index.isin(self.df.index)]
-        df = df.drop_duplicates(subset=['code'], keep='first')
-        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
-        df = df.sort_index(key=self.sort_fnc)
-        return df
-    
-    def __xor__(self, other, fields=None):
-        df = (
-            pd.concat([self.df, other.df])
-            .drop_duplicates(subset=fields, keep=False)
-            .assign(dependents=lambda db: db.dependents.apply(lambda x: eval(x) if x != 'nan' else set()))
-            .sort_index(key=self.sort_fnc)
-        )
-        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
-        return df
-    
-    def __eq__(self, other):
-        df = self ^ other
-        return df.empty
-
+from utilities import TableComparator
 
 @pytest.fixture
 def base_workbook():
@@ -334,60 +279,118 @@ class TestModTables:
 
 class TestSetRecordsTable:
 
-    def test_field_fml(self, base_workbook):
+    @pytest.mark.parametrize("set_up, values, answer", [
+        (dict(G3='=10+F3', H3='=10+G3', F3='10+H3'), dict(G6='=G3+100'),
+        {'F3': '0', 'G3': '', 'H3': ''}
+        ),
+        (dict(F3='=10',G3='=10+F3', H3='=10+G3', G6='=G3+100'), dict(F3='10+H3'),
+        {'F3': '0', 'G3': '20', 'H3': '30'}
+        ),
+        (dict(F3='=10+F3'), None,  # Referencia a si misma
+        {'F3': '0'}
+        ),
+        (dict(F3='=10+H3',G3='=10+F3', H3='=10+G3'), None,  # Conjunto de celdas con referencia circular.
+        {'F3': '', 'G3': '', 'H3': '0'}
+        ),
+        (dict(F3='=10',G3='=10+F3', H3='=10+G3'), dict(F3='10+H3'),  # Fórmula que cierra la referencia circular.
+        {'F3': '0', 'G3': '20', 'H3': '30'}
+        ),
+    ])
+    def test_circular_reference_cell(self, base_workbook, set_up, values, answer):
+        values = values or {}
+        tbl = base_workbook['Parameters and inner links']['sh2_tbl1']
+        tbl.set_records(set_up, field='fml')
+        tbl.recalculate(recalc=True)
+        if values:
+            tbl.set_records(values, field='fml')
+            tbl.recalculate(recalc=True)
+        assert (tbl.data.loc[answer.keys()].value.apply(str) == pd.Series(answer)).all()
+        keys = list(set_up.keys() | values.keys())
+        codes = tbl.data.loc[keys].code.tolist()
+        dependents = tbl.parent.all_dependents({tbl: set(codes)}, with_links=True)
+        assert all(
+            val == CIRCULAR_REF
+            for ftbl, codes in dependents.items()
+            if not (df := ftbl.data).empty
+            for val in df.loc[df.code.isin(codes)].value
+        )
+
+    @pytest.mark.parametrize("set_up, values, answer", [
+        (dict(F13='=+F15+F12'), dict(F12=1000),  # Referencia explícita a celda vacía.
+        {'F12': '1000', 'F13': '1015', 'G16': '3428', 'G17': '3491', 'H16': '3508', 'H17': '3596'}
+        ),
+        (dict(F13='=+F15+SUM(F12:H12)'), dict(F12=1000),  # Referencia a celda vacía en extremo de rango.
+        {'F12': '1000', 'F13': '1015', 'G16': '3428', 'G17': '3491', 'H16': '3508', 'H17': '3596'}
+        ),
+        (dict(F13='=+F15+SUM(F12:H12)'), dict(H12=1000),  # Referencia a celda vacía en extremo de rango.
+        {'H12': '1000', 'F13': '1015', 'G16': '3428', 'G17': '3491', 'H16': '3508', 'H17': '3596'}
+        ),
+        (dict(F13='=+F15+SUM(F12:H12)'), dict(G12=1000),  # Referencia a celda vacía en extremo de rango.
+        {'G12': '1000', 'F13': '1015', 'G16': '3428', 'G17': '3491', 'H16': '3508', 'H17': '3596'}
+        ),
+    ])
+    def test_empty_cell_reference(self, base_workbook, set_up, values, answer):
+        tbl = base_workbook['Parameters and inner links']['sh2_tbl2']
+        tbl.set_records(set_up, field='fml')
+        tbl.recalculate(recalc=True)
+        key = list(values.keys())[0]
+        # Si la referencia a la celda vacía se halla explícitamente en la fórmula o como extremo
+        # en un rango de celdas, se crea el registro (record) correspondiente por lo que key in index,
+        # en caso contrario no se crea el registro (key not in index).
+        assert key not in tbl.data.index or key in list(set_up.values())[0] 
+        tbl.set_records(values, field='value')
+        tbl.recalculate(recalc=True)
+        assert (tbl.data.loc[answer.keys()].value.apply(str) == pd.Series(answer)).all()
+
+
+    @pytest.mark.parametrize("values, answer", [
+        (
+           dict(F13='=+F15+F12', G12='=+E12&F12'),   # Fórmula con referencia a celda vacía.
+            {'F13': '15', 'G12': 'tabla2:', 'G16': '2428', 'G17': '2491', 'H16': '2508', 'H17': '2596'}
+        ),
+        (
+            dict(F13='=F5 + G13', F15='=+F14+G14'),   # Creación de nuevo enlace externo
+            {'F13': '1300', 'F15': '35', 'F17': '125', 'G16': '3713', 'G17': '3776', 'H15': '73', 'H16': '3793', 'H17': '3901'}
+        ),
+        (
+            dict(H13='=+$G$2*F13 + 75', F17='=+F16+F15+2*F14', G16='=F9 + F13 + F14'),  # Cambiar fórmulas en celdas existentes  
+            {'F17': '115', 'G16': '2448', 'G17': '2511', 'H13': '75', 'H16': '2528', 'H17': '2616'}
+        ),
+        (
+            dict(F12='=1+2', G12='=G14+F17', H12='=F12+G12'),  # Asignar fórmulas en celdas vacías 
+            {'F12': '3', 'G12': '130', 'H12': '133'}
+        ),
+        (
+            dict(F13='=1+2', G14='=F13+G15'),  # Asignar fórmulas en celdas con valores
+            {'F13': '3', 'G14': '41', 'G16': '2416', 'G17': '2495', 'H14': '51', 'H16': '2496', 'H17': '2600'}
+        ),
+    ])
+    def test_field_fml(self, values, answer, base_workbook):
         field = 'fml'
-        # values = dict(F13='=+F15+F12', G12='=+E12&F12')   # Fórmula con referencia a celda vacía.
-        # values = dict(F13='=F5 + G13', F15='=+F14+G14')   # Creación de nuevo enlace externno
-        # values = dict(H13='=+$G$2*F13 + 75', F17='=+F16+F15+2*F14', G16='=F9 + F13 + F14')  # Cambiar fórmulas en celdas existentes  
-        # values = dict(F12='=1+2', G12='=G14+F17', H12='=F12+G12')  # Asignar fórmulas en celdas vacías 
-        # values = dict(F13='=1+2', G14='=F13+G15')  # Asignar fórmulas en celdas con valores
-
-    def test_field_value1(self, base_workbook):
-        field = 'value'
-        wb = base_workbook
-        ws = wb['Parameters and inner links']
-        tbl = ws['sh2_tbl2']
-
-        values = dict(F13=55, F15=80, G15=22)  # Cambiar valores en celdas existentes
-        cells = list(values.keys())
-        codes = [tbl.encoder('encode', x) for x in cells]
-
-        df1 = TableComparator(tbl.data)
+        tbl = base_workbook['Parameters and inner links']['sh2_tbl2']
         tbl.set_records(values, field=field)
         tbl.recalculate(recalc=True)
-        df2 = TableComparator(tbl.data)
+        assert (tbl.data.loc[answer.keys()].value.apply(str) == pd.Series(answer)).all()
 
-        df = tbl.data
 
-        flds = df.columns.tolist()
-        flds.remove('value')
-        diff = df2.symmetric_difference(df1, fields=flds)
-        assert diff.empty, 'Esta peración solo cambia valore en el campo "value"'
-
-        diff = df2 ^ df1
-        assert set(diff.index.unique()) & set(cells) == set(cells), 'Al menos las celdas reportadas cambian'
-
-        all_dependents = set(tbl.get_cells_to_calc(codes))
-        all_codes = set(diff.code.to_list())
-        assert all_codes.issubset(all_dependents), 'Faltan las "cell" que no cambian de valor porque por ejemplo en la fórmula se multiplica por cero'
-
-        pass
-
-    def test_field_value2(self, base_workbook):
+    @pytest.mark.parametrize("values, answer", [
+        (
+            dict(F12=35, G12=80, H12=22),  # Asignar valores en celdas vacías
+            {'F12': '35', 'G12': '80', 'H12': '22'}
+        ),
+        (
+            dict(F13=55, F15=80, G15=22),  # Cambiar valores en celdas existentes
+            {'F13': '55', 'F15': '80', 'F17': '170', 'G15': '22', 'G16': '2468', 'G17': '2515', 'H15': '102', 'H16': '2548', 'H17': '2685'}
+        ),
+        (
+            dict(G16=333, H13=222),  # Asignar valores en celdas con fórmulas
+            {'G16': '333', 'G17': '396', 'H13': '222', 'H16': '413', 'H17': '501'}
+        )
+    ])
+    def test_field_value(self, values, answer, base_workbook):
         field = 'value'
-        wb = base_workbook
-        ws = wb['Parameters and inner links']
-        tbl = ws['sh2_tbl2']
-
-        values = dict(F12=35, G12=80, H12=22)  # Asignar valores en celdas vacías 
-
-        df1 = TableComparator(tbl.data)
+        tbl = base_workbook['Parameters and inner links']['sh2_tbl2']
         tbl.set_records(values, field=field)
         tbl.recalculate(recalc=True)
-        df2 = TableComparator(tbl.data)
+        assert (tbl.data.loc[answer.keys()].value.apply(str) == pd.Series(answer)).all()
 
-        cells = list(values.keys())
-        codes = [tbl.encoder('encode', x) for x in cells]
-
-        
-        # values = dict(G16=333, H13=222)  # Asignar valores en celdas con fórmulas
