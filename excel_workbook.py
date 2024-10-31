@@ -8,7 +8,7 @@ from idlelib.configdialog import changes
 
 import pandas as pd
 import numpy as np
-from typing import Literal, Optional, Any, Dict, List, TypedDict
+from typing import Literal, Optional, Any, Dict, List, TypedDict, Sequence, Iterable
 import itertools
 from typing import Protocol, Type
 
@@ -30,7 +30,7 @@ class DataFrameStructure(TypedDict):
 
 # Example structure definition
 structure: DataFrameStructure = {
-    'index': [int],  # Example: Index should be integers
+    'index': [str],  # Example: Index should be integers
     'columns': TABLE_DATA_MAP
 }
 
@@ -67,6 +67,8 @@ class CircularRef:
     @classmethod
     def get_instance(cls, value=None):
         self = cls()
+        if isinstance(value, cls):
+            return value
         self.value = value or 0
         return self
     
@@ -166,8 +168,7 @@ tbl_address = lambda tbl: tbl_pattern.match(tbl).groups()
 
 ndx_sorter = lambda x: ('0000' + x.str.extract(r'(\d+)', expand=False)).str.slice(-4) + x.str.extract(r'([A-Z]+)', expand=False)
 
-reduce_sets = lambda items: functools.reduce(lambda t, e: t.union(e) or t, items, set())
-
+flatten_sets = lambda items: set(itertools.chain(*items))
 
 def excel_to_pandas_slice(excel_slice, axis, table_name, mask=None, withValues=False):
     sheet, lst_id = tbl_address(excel_slice)
@@ -277,21 +278,6 @@ def coords_from_range(rng):
     return dict(min_col=min_col, min_row=min_row, max_col=max_col, max_row=max_row)
 
 
-def data_in_range(openpyxl_sheet, ws_range:str):
-    ws = openpyxl_sheet
-    rgn_coords = coords_from_range(ws_range)
-    rgn_fmls = {}
-    rgn_values = {}
-    rgn_map = [rgn_values, rgn_fmls]
-    [
-        operator.setitem(rgn_map[k], cell.coordinate, value.replace('=+', '=') if k == 1 else value)
-        for row in ws.iter_rows(**rgn_coords)
-        for cell in row
-        if (value:=cell.value) and (k:=int(isinstance(value, str) and value[0] == '=')) < 2
-    ]
-    return rgn_fmls, rgn_values
-
-
 class ExcelObject(ABC):
         _title: str
         id: Any
@@ -358,8 +344,8 @@ class ExcelCollection(ExcelObject, ABC):
         self._objects.insert(ins_point, excel_object)
         pass
 
-    def _create_object(self, object_name:str|None, ins_point:int|None = None) -> ExcelObject:
-        obj = self.object_class(self, object_name)
+    def _create_object(self, object_name:str|None, *args, ins_point:int|None = None, **kwargs) -> ExcelObject:
+        obj = self.object_class(self, object_name, *args, **kwargs)
         if ins_point:
             self.move_object(obj.title, ins_point)
         return obj
@@ -439,39 +425,55 @@ class ExcelWorksheet(ExcelCollection):
                 if value:
                     to_process[key] = value
         return answer
+    
+    def propagate_circular_ref(ws, tbl: 'ExcelTable', circular_refs: list[str]):
+        # Se marcan con circular reference todos los cell aguas arriba para las
+        dependents = ws.all_dependents({tbl: set(circular_refs)}, with_links=True)
+        # cells diferentes a la cell que establece la circulear_reference
+        # además de los enlaces externos.
+        inner_dependents = dependents.pop(tbl)
+        dependents[tbl] = inner_dependents - set(circular_refs)
+        for ftbl, fcodes in dependents.items():
+            df = ftbl.data 
+            mask = df.code.isin(fcodes)
+            df.loc[mask, 'value'] = df.loc[mask].value.apply(lambda x: CIRCULAR_REF.get_instance(x))
+        # cells que establecen la circular_reference
+        mask = df.code.isin(circular_refs)
+        tbl.data.loc[mask, 'value'] = CIRCULAR_REF
+
+    def register_code(self, tbl, xl_error, codes):
+            df = tbl.data
+            err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{self.title}'!{xl_error.code}"], default_value=xl_error)))
+            try:
+                error_rec = df.loc[err_cell].copy()
+            except:
+                # Si no existe código del error en la tabla, se crea un nuevo registro para el error
+                error_rec = pd.Series(
+                    dict(fml=None, dependents=set(), res_order=0, ftype='$', value=err_value, code=err_code), 
+                    dtype=object
+                )
+            # Se agrega el código de la celda al campo dependents del registro del error
+            error_rec.dependents.update(tbl_address(x)[-1] for x in codes)
+            df.loc[err_cell] = error_rec
+
+    def unregister_code(self, tbl, xl_error, codes):
+            wb = self.parent
+            df = tbl.data
+            err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{self.title}'!{xl_error.code}"], default_value=xl_error)))
+            error_rec = df.loc[err_cell].copy()
+            # Se agrega el código de la celda al campo dependents del registro del error
+            error_rec.dependents.difference_update(tbl_address(x)[-1] for x in codes)
+            df.loc[err_cell] = error_rec
+            if not error_rec.dependents:
+                df.drop(err_cell)
+                wb.links[err_code].difference_update([f"'{tbl.parent.id}'!{tbl.id}"])
+                if not wb.links[err_code]:
+                    wb.links.pop(err_code)
+                    tbl.parent._param_map.pop(err_cell)
 
 
     def propagate_error(self, xl_error: XlErrors, codes: list[str] | None = None, reg_value=None):
         assert reg_value is None or not isinstance(reg_value, XlErrors), 'reg_value must be None or not a XlErrors'
-        def register_code(tbl, xl_error, codes):
-                df = tbl.data
-                err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{self.title}'!{xl_error.code}"], default_value=xl_error)))
-                try:
-                    error_rec = df.loc[err_cell].copy()
-                except:
-                    # Si no existe código del error en la tabla, se crea un nuevo registro para el error
-                    error_rec = pd.Series(
-                        dict(fml=None, dependents=set(), res_order=0, ftype='$', value=err_value, code=err_code), 
-                        dtype=object
-                    )
-                # Se agrega el código de la celda al campo dependents del registro del error
-                error_rec.dependents.update(tbl_address(x)[-1] for x in codes)
-                df.loc[err_cell] = error_rec
-        
-        def unregister_code(tbl, xl_error, codes):
-                df = tbl.data
-                err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{self.title}'!{xl_error.code}"], default_value=xl_error)))
-                error_rec = df.loc[err_cell].copy()
-                # Se agrega el código de la celda al campo dependents del registro del error
-                error_rec.dependents.difference_update(tbl_address(x)[-1] for x in codes)
-                df.loc[err_cell] = error_rec
-                if not error_rec.dependents:
-                    df.drop(err_cell)
-                    wb.links[err_code].difference_update([f"'{tbl.parent.id}'!{tbl.id}"])
-                    if not wb.links[err_code]:
-                        wb.links.pop(err_code)
-                        tbl.parent._param_map.pop(err_cell)
-
 
         wb = self.parent
         to_process = {}
@@ -493,29 +495,14 @@ class ExcelWorksheet(ExcelCollection):
                 ws_id, tbl_id, _ = cell_pattern.match(code).groups()
                 tbl = wb['#' + ws_id]['#' + tbl_id]
                 # Se consigna para procesamiento en la clave de la tabla correspondiente
-                to_process.setdefault(tbl, []).append(code)
-            fnc = register_code if reg_value is None else unregister_code
+                to_process.setdefault(tbl, set()).add(code)
+            fnc: Callable[[ExcelTable, XlErrors, Iterable[str]], None] = self.register_code if reg_value is None else self.unregister_code
             [fnc(tbl, xl_error, codes) for tbl, codes in to_process.items()]
 
-        propagate_error = {}
-        while to_process:
-            # print(f'{to_process=}')
-            tbls = list(to_process.keys())
-            while tbls:
-                tbl = tbls.pop()
-                codes = to_process.pop(tbl)
-                dependents = [tbl.encoder('decode', tbl_address(x)[1]) for x in codes]
-                propagate_error.setdefault(tbl, []).extend(dependents)
-                # print(f'ws = {tbl.parent.title}, tbl = {tbl.title}')
-                # print(sorted(dependents, key=lambda x: '{0: >4s}{1: >2s}'.format(*cell_address(x))))
-                all_dep = set(tbl.direct_dependents(dependents).dependent)
-                # print(f'{all_dep=}')
-                for dep in all_dep:
-                    sht_id, tbl_id = cell_pattern.match(dep).groups()[:2]
-                    tbl = wb['#' + sht_id]['#' + tbl_id]
-                    to_process.setdefault(tbl, []).append(dep)
+        propagate_error = self.all_dependents(to_process)
         reg_value = reg_value or xl_error
-        for tbl, cells in propagate_error.items():
+        for tbl, codes in propagate_error.items():
+            cells = [ExcelTable.encoder('decode', x, df=tbl.data) for x in codes]
             tbl.data.loc[cells, 'value'] = reg_value
 
     def insert(self, cell_slice, from_delete=False):
@@ -620,7 +607,7 @@ class ExcelWorksheet(ExcelCollection):
             df = tbl.data.loc[cells]
             codes = df.code.tolist()
             mask =  ~df.dependents.isna()
-            all_dependents = set(itertools.chain(*df.loc[mask].dependents.tolist()))
+            all_dependents = flatten_sets(df.loc[mask].dependents.tolist())
             all_dependents = all_dependents - set(codes)
             mask = tbl.data.code.isin(all_dependents) & ~tbl.data.value.isin(list(XlErrors))
             if mask.any():
@@ -731,7 +718,7 @@ class ExcelWorksheet(ExcelCollection):
             self._param_map.update((key, kwargs[key]) for key in keys)
             values = {self.parameter_code(key): kwargs[key] for key in keys}
             self.broadcast_changes(values, field='parameter')
-        # If no arguments are provided, return the list of parameters of the sheet.
+        # If no arguments are provided, return the list of parameters' sheet.
         else:
             return list(self._param_map.keys())
 
@@ -792,7 +779,7 @@ class ExcelWorksheet(ExcelCollection):
                 tbl = ws[tbl_id]
                 match field:
                     case 'value' | 'parameter':
-                        cells = tbl.encoder('decode', pd.Series(cells, index=cells)).to_dict()
+                        cells = tbl.encoder('decode', pd.Series(cells, index=cells), df=tbl.data).to_dict()
                         mapper = {key: changes[cell] for cell, key in cells.items()}
                         tbl.set_values(mapper, field=field, recalc=True)
                     case 'cell':  # field == 'cell'
@@ -824,7 +811,7 @@ class ExcelWorksheet(ExcelCollection):
 
 class ExcelTable(ExcelObject):
 
-    def __init__(self, parent:ExcelWorksheet, tbl_name:str|None, table_rng:str, fmls: dict[str,str]|None, values:dict[str, Any]|None, recalc:bool=False):
+    def __init__(self, parent:ExcelWorksheet, tbl_name:str|None, table_rng:str, fmls: dict[str,str]|None=None, values:dict[str, Any]|None=None):
 
         super().__init__(tbl_name)
         self.parent: ExcelWorksheet = parent
@@ -837,12 +824,14 @@ class ExcelTable(ExcelObject):
         parent.append(self)
         if fmls:
             self.set_fmls(fmls, values)
-        self.set_values(values, recalc=False)
+        if values:
+            self.set_values(values, recalc=False)
+        self.pack_data()
         self.recalculate(recalc=True)
         pass
 
     @classmethod
-    def create_dataframe(cls) -> pd.DataFrame:
+    def create_dataframe(cls, **kwargs) -> pd.DataFrame:
         # Create empty DataFrame with specified index and columns
         structure: DataFrameStructure = {'index': [str], 'columns': TABLE_DATA_MAP}
         df = (
@@ -872,21 +861,7 @@ class ExcelTable(ExcelObject):
         # MODIFICACIONES A LA BASE DE DATOS DE LA TABLA
         # 1 - Records con fórmulas existentes que van a ser redefinidas por los valores recibidos
         if (to_convert := list(set(keys) & set(df.loc[~df.fml.isna()].index))):
-            # Se eliminan del campo "dependent" en las celdas aguas abajo 
-            # las celdas que se van a modificar.
-            fmls = df.loc[to_convert].fml.apply(lambda x: tbl.encoder('decode', x, df=df)).tolist()
-            excel_slice = [term.replace('$', '')  for fml in fmls for term in rgn_pattern.findall(fml)]
-
-            to_convert_coded = df.loc[to_convert].code.tolist()
-            encoded_keys = tbl._cell_rgn(excel_slice)
-
-            df.loc[encoded_keys, 'dependents'] = (
-                df.loc[encoded_keys]
-                .dependents
-                .apply(lambda x: x.difference_update(to_convert_coded))
-            )
-            # Se convierten las cells de fml a values:
-            df.loc[keys, ['fml', 'res_order', 'ftype']] = [None, 0, '#']
+            df = tbl.clear_cells(to_convert, data=df)
 
         # 2 - Records no existentes que van a ser creados por los valores recibidos
         if (to_init := list(set(keys) - set(df.index))):
@@ -928,15 +903,16 @@ class ExcelTable(ExcelObject):
                 up_codes = [tbl.encoder('decode', x, df=df) for x in tbl.get_cells_to_calc([code], data=df)]
                 fcells = list(set(cells) & set(df.index))
                 if set(cells) & set(up_codes):
+                    circular_cell = tbl.encoder('decode', code, df=df)
+                    df.loc[circular_cell, 'res_order'] = 1
                     circular_refs[code] = fcells
                     continue
                 df.loc[fcells, 'dependents'] = df.loc[fcells].dependents.apply(lambda x: x | {code} if isinstance(x, set) else {code})
-
-        # Se actualizan el campo de las celdas a modificar
-        if field == 'fml':
             vals = {key: tbl.encoder('encode', fml, df=df) for key, fml in values.items()}
         else:   # field == 'value'
             vals = values
+        
+        # Se actualizan el campo de las celdas a modificar
         df.loc[vals.keys(), field] = ese = pd.Series(vals, name=field, dtype=TABLE_DATA_MAP[field])
         
         bFlag = field == 'value' and(df.loc[vals.keys(), 'ftype'] != '#').any()
@@ -953,7 +929,6 @@ class ExcelTable(ExcelObject):
 
         if (field == 'fml' or bFlag) and changed:
             up_codes = set(tbl.get_cells_to_calc(changed, data=df))
-            # tbl.encoder('decode', list(up_codes))
             # up_codes
 
             mask = ~df.code.isin(up_codes) & df.dependents.apply(lambda x: True if isinstance(x, set) and x & up_codes else False)
@@ -964,7 +939,6 @@ class ExcelTable(ExcelObject):
                 .to_dict()
             )
             down_codes = set(order0_map.keys())
-            # tbl.encoder('decode', list(down_codes))
             # order0_map, down_codes
 
             # Se construyen los pairs
@@ -1027,68 +1001,102 @@ class ExcelTable(ExcelObject):
             # order
 
             df.loc[order.index.tolist(), 'res_order'] = order
+            # Se establece el tipo de fórmula para los res_order modificados
+            ft_df = pd.concat(
+                [
+                    order, 
+                    # values: corresponde a los datos de entrada filtrados con keys al purro comienzo
+                    pd.Series(
+                        values.values(), name='fml', index=pd.Index(values.keys(), name='cell')
+                    ).loc[order.index]
+                ],
+                axis=1
+            )
+            ft_df = tbl.formula_type(ft_df, res_order=set(order.tolist()))
+            ftype = ft_df.ftype
+            df.loc[ftype.index, 'ftype'] = ftype
             
         tbl.data = df
         # Se entra a restablecer la integridad del df.
         # 1 - Enlaces externos/Parámetros: Elimina aquellos con 'dependents' vacíos.
-        if circular_refs:
-            ws = tbl.parent
-            # Se marcan con circular reference todos los cell aguas arriba para las
-            dependents = ws.all_dependents({tbl: set(circular_refs.keys())}, with_links=True)
-            # cells diferentes a la cell que establece la circulear_reference
-            # además de los enlaces externos.
-            inner_dependents = dependents.pop(tbl)
-            dependents[tbl] = inner_dependents - set(circular_refs.keys())
-            for ftbl, fcodes in dependents.items():
-                df = ftbl.data 
-                mask = df.code.isin(fcodes)
-                df.loc[mask, 'value'] = df.loc[mask].value.apply(lambda x: CIRCULAR_REF.get_instance(x))
-            # cells que establecen la circular_reference
-            mask = df.code.isin(circular_refs.keys())
-            df.loc[mask, 'value'] = CIRCULAR_REF
-            
+        if circular_refs:            
             # Se establecen las dependencias para las fórmulas que crean referencias circulares.
             df = tbl.data
+            cells_in_fmls = list(flatten_sets(set(x) for x in circular_refs.values()))
+            cells_in_tbls = tbl.cells_in_data_rng(cells_in_fmls)
+            df.loc[cells_in_tbls, 'value'] = df.loc[cells_in_tbls].value.apply(lambda x: CIRCULAR_REF.get_instance(x))
+            # Se retiran los dependents de las circular_ref ya que su valor se determina en el cálculo de las circular_refs.
+            changed = list(set(changed) - set(tbl.get_cells_to_calc(circular_refs.keys())))
             for code, fcells in circular_refs.items():
                 df.loc[fcells, 'dependents'] = df.loc[fcells].dependents.apply(lambda x: x | {code} if isinstance(x, set) else {code})
-            
+            changed.extend(circular_refs.keys())
 
+        tbl.changed.extend(changed)
+
+    def pack_data(tbl):
+        df = tbl.data
+
+        # Empty cells sin dependents
+        mask = df.value.isin([EMPTY_CELL]) & df.dependents.isna()
+        if mask.any():
+            df.drop(index=df.loc[mask].index, inplace=True)
+
+        # Enlaces externos sin dependents
         lnks = tbl.links()
         if (mask := df.loc[lnks].dependents.isna()).any():
             for cell, code in df.loc[lnks].code[mask].to_dict().items():
                 df.drop(index=cell, inplace=True)
                 tbl.parent.reset_link(tbl, code)
-        tbl.changed.extend(changed)
-        # tbl.recalculate(recalc=True)
+
+        tbl.changed = list(set(tbl.changed) & set(df.code))
+
+
+    def clear_cells(tbl, to_clear: list[str], data=None):
+        df = tbl.data if data is None else data
+        # Se eliminan del campo "dependent" en las celdas aguas abajo 
+        # las celdas que se van a modificar.
+        fmls = df.loc[to_clear].fml.apply(lambda x: tbl.encoder('decode', x, df=df)).tolist()
+        excel_slice = [term.replace('$', '')  for fml in fmls for term in rgn_pattern.findall(fml)]
+
+        to_clear_coded = df.loc[to_clear].code.tolist()
+        encoded_keys = tbl._cell_rgn(excel_slice)
+
+        df.loc[encoded_keys, 'dependents'] = (
+            df.loc[encoded_keys]
+            .dependents
+            .apply(lambda x: x.difference_update(to_clear_coded))
+        )
+        # Se convierten las cells de fml a values:
+        df.loc[to_clear, ['fml', 'res_order', 'ftype']] = ['', 0, '#']
+        return df
+
 
     def add_empty_cells(tbl, to_init: list[str], data=None):
         def is_cell_in_fml(cell, fml):
-            code = lambda cell: '{1:0>6s}{0:_>3s}'.format(*cell_pattern.match(cell).groups()[1:])
-            if not fml:
-                return False
-            components = [x.replace('$', '').split(':') for x in set(rgn_pattern.findall(fml))]
-            if not any(x == cell for x in itertools.chain(*components)):
-                cell_code = code(cell)
-                rng_limits = (
-                    [code(x) for x in pair]
-                    for pair in components if len(pair) == 2
-                )
-                # mask = [t[0] <= cell_code <= t[1] for t in rng_limits]
-                # print(f'{cell_code=}, {mask=}')
-                bflag = any(t[0] <= cell_code <= t[1] for t in rng_limits)
-                return bflag
-            return True
+                code = lambda cell: '{1:0>6s}|{0:_>3s}'.format(*cell_pattern.match(cell).groups()[1:]).split('|')
+                if not fml:
+                    return False
+                components = [x.replace('$', '').split(':') for x in set(rgn_pattern.findall(fml))]
+                if not any(x == cell for x in itertools.chain(*components)):
+                    cell_code = code(cell)
+                    rng_limits = (
+                        [code(x) for x in pair]
+                        for pair in components if len(pair) == 2
+                    )
+                    # mask = [t[0] <= cell_code <= t[1] for t in rng_limits]
+                    # print(f'{cell_code=}, {mask=}')
+                    bflag = any(t[0][0] <= cell_code[0] <= t[1][0] and t[0][1] <= cell_code[1] <= t[1][1] for t in rng_limits)
+                    return bflag
+                return True
 
-        value_rec = pd.Series(
-            dict(fml=None, dependents=None, res_order=0, ftype='#', value=EMPTY_CELL, code=''), 
-            dtype=object
-        )
+        value_rec = dict(fml='', dependents=set(), res_order=0, ftype='#', value=EMPTY_CELL, code='')
+
         bflag = data is None
         df = tbl.data if bflag else data
         df = pd.concat(
             [
                 df,
-                pd.DataFrame(value_rec.to_dict(), index=pd.Index(to_init, name='cell'))
+                pd.DataFrame([value_rec.values()], columns=value_rec.keys(), index=pd.Index(to_init, name='cell'))
             ]
         )
         df.loc[to_init, 'code'] = [f'{tbl.next_id()}' for _ in range(len(to_init))]
@@ -1135,7 +1143,9 @@ class ExcelTable(ExcelObject):
             .sort_index()
         )
         self.data.index.rename('cell', inplace=True)
-        df = self.data
+        self.data.loc[:, ['dependents']] = self.data.dependents.where(~df.dependents.isnull(), set())
+        self.data.loc[:, ['fml']] = self.data.fml.apply(lambda x: x if isinstance(x,str) else '')
+        self.data.loc[:, ['ftype']] = self.data.ftype.apply(lambda x: x if isinstance(x,str) else '#')
         df = self.data
         self.parent.register_tbl(self)
         values = values or {}
@@ -1234,16 +1244,16 @@ class ExcelTable(ExcelObject):
         keys = list(values.keys() & (set(self.links()) | set(self._cell_rgn(self.data_rng))))
         if not keys:
             return
+
         # New value cells to be initialized
         if (to_init := list(set(keys) - set(df.index))):
-            value_rec = pd.Series(
-                dict(fml=None, dependents=None, res_order=0, ftype='$', value=None, code=''), 
-                dtype=object
+            value_rec = dict(
+                fml='', dependents=set(), res_order=0, ftype='#', value=EMPTY_CELL, code=''
             )
             df = pd.concat(
                 [
                     df,
-                    pd.DataFrame(value_rec.to_dict(), index=pd.Index(to_init, name='cell'))
+                    pd.DataFrame([value_rec.values()], columns=value_rec.keys(), index=pd.Index(to_init, name='cell'))
                 ]
             )
             df.loc[to_init, 'code'] = [f'{self.next_id()}' for _ in range(len(to_init))]
@@ -1251,7 +1261,7 @@ class ExcelTable(ExcelObject):
         # Formula cells to be converted to value cells
         if (to_convert := list(set(keys) & set(df.loc[~df.fml.isna()].index))):
             # Se eliminan del campo "dependent" de las celdas aguas abajo de las celdas que se van a convertir.
-            fmls = df.loc[to_convert].fml.apply(lambda x: self.encoder('decode', x)).tolist()
+            fmls = df.loc[to_convert].fml.apply(lambda x: self.encoder('decode', x, df=self.data)).tolist()
             excel_slice = [term.replace('$', '')  for fml in fmls for term in rgn_pattern.findall(fml)]
             to_convert_coded = df.loc[to_convert].code.tolist()
             independents = self._cell_rgn(excel_slice)
@@ -1313,6 +1323,7 @@ class ExcelTable(ExcelObject):
                     ]
                 )
             else:
+                cells = cells.sort_values('cell', key=ndx_sorter)
                 mask = cells.cell.tolist()
                 row, col = map(set, zip(*[cell_address(cell) for cell in mask]))
                 ftype, cell_range = (row.pop(), sorted(col)) if len(row) == 1 else (col.pop(), sorted(row))
@@ -1370,10 +1381,14 @@ class ExcelTable(ExcelObject):
             return [(cell, py_fml.replace(frst_item, x)) for cell, x in mask]
         return [cell + py_fml.replace(frst_item, x) for cell, x in mask]
 
-    def formula_type(self, df):
+    def formula_type(self, df, res_order:list[int]|None=None):
+        mask = df.res_order > 0
+        if res_order is not None:
+            mask = mask & (df.res_order.isin(res_order))
+
         order = (
             df
-            .loc[df.res_order > 0, ['fml', 'res_order']]
+            .loc[mask, ['fml', 'res_order']]
             .reset_index(names='cell')
             .set_index('res_order')
             .sort_index()
@@ -1434,7 +1449,7 @@ class ExcelTable(ExcelObject):
 
             formulas.extend([(f'{col}{row}', '$') for row, mask in next.items() for col in mask])
         ftype = pd.Series(dict(formulas), dtype=TABLE_DATA_MAP['ftype'])
-        df.loc[:, 'ftype'] = '#'     # Se asume que toda celda por defecto es celda de valor.
+        # df.loc[:, 'ftype'] = '#'     # Se asume que toda celda por defecto es celda de valor.
         df.loc[ftype.index, 'ftype'] = ftype     # Se cambia el tipo para las celdas con fórmula.
         return df
 
@@ -1459,7 +1474,7 @@ class ExcelTable(ExcelObject):
                 dependents = df.loc[changed].dependents
                 mask = ~dependents.isna()
                 if mask.any():
-                    changed = list(reduce_sets(dependents[mask]))
+                    changed = list(flatten_sets(dependents[mask]))
                     grouped_changed = {key: set(grp) for key, grp in df.loc[changed, ['res_order']].groupby(by='res_order').groups.items()}
                     [to_report.setdefault(k, set()).update(v) for k, v in grouped_changed.items()]
 
@@ -1523,10 +1538,14 @@ class ExcelTable(ExcelObject):
                 cells, formulas = map(list, zip(*tbl.ordered_formulas(changed, feval=True)))
                 vals = tbl.evaluate(*formulas, pythonize=False)
                 s1 = pd.Series(vals, index=tbl.data.loc[cells].code, dtype=TABLE_DATA_MAP['value'])     # New values
+                circular_ref_mask = s1 == CIRCULAR_REF
                 errors_mask = s1.isin(list(XlErrors))
-                mask = ~errors_mask & (s0 != s1[s0.index])
-                # Celdas que al recalcular se generan nuevos errores
+                mask = ~circular_ref_mask & ~errors_mask & (s0 != s1[s0.index])
+                if circular_ref_mask.any():
+                    circular_refs = s1[circular_ref_mask].index.tolist()
+                    ws.propagate_circular_ref(tbl, circular_refs)
                 if errors_mask.any():
+                    # Celdas que al recalcular se generan nuevos errores
                     errors = s1[errors_mask]
                     to_propagate = {}
                     [
@@ -1548,7 +1567,7 @@ class ExcelTable(ExcelObject):
                     for err, codes in xl_errors.items():
                         tbl.parent.propagate_error(err, codes=codes, reg_value=XlFlags.ERROR_CLEAR)
                 values.update(vals.to_dict())
-                vals.rename(index=lambda x: tbl.encoder('decode', x), inplace=True)
+                vals.rename(index=lambda x: tbl.encoder('decode', x, df=tbl.data), inplace=True)
                 tbl.data.loc[vals.index, 'value'] = vals
 
             ws = tbl.parent
@@ -1677,7 +1696,8 @@ class ExcelTable(ExcelObject):
             .sort_index(key=lambda x: x.str.extract(r'(\d+)', expand=False).astype(int))
         )
 
-    def encoder(self, action: Literal['decode', 'encode'], in_fmls: str | list[str] | pd.Series, df: pd.DataFrame | None = None) -> pd.Series:
+    @classmethod
+    def encoder(cls, action: Literal['decode', 'encode'], in_fmls: str | list[str] | pd.Series, df: pd.DataFrame) -> pd.Series:
         def translate(m, field: Literal['cell', 'code']):
             key = m[0].replace('$', '')
             var = df.loc[key, field]
@@ -1688,8 +1708,6 @@ class ExcelTable(ExcelObject):
 
         if b_str := isinstance(in_fmls, str):
             in_fmls = pd.Series([in_fmls])
-        if df is None:
-            df = self.data
         if action == 'decode':
             df = df.reset_index().set_index('code')
             field = 'cell'
@@ -1711,7 +1729,7 @@ class ExcelTable(ExcelObject):
         cell_rgn = self._cell_rgn(excel_slice)
         mask = self.data.index.isin(cell_rgn) & ~self.data.fml.isna()
         coded_fmls = self.data.loc[mask, 'fml']
-        fmls = self.encoder('decode', coded_fmls)
+        fmls = self.encoder('decode', coded_fmls, df=self.data)
         if len(cell_rgn) == 1:
             return fmls.iloc[0]
         return self.excel_table(fmls)
@@ -1791,7 +1809,7 @@ class ExcelTable(ExcelObject):
         fmls.append(fml_df)
 
         external_links = wb.links.keys() & set(f"'{ws.id}'!{x}" for x in df.code)
-        etables = reduce_sets([wb.links[code] for code in external_links])
+        etables = flatten_sets([wb.links[code] for code in external_links])
         for etbl in etables:
             sht_id, tbl_id = tbl_address(etbl)
             df = wb['#' + sht_id]['#' + tbl_id].data
@@ -1813,7 +1831,7 @@ class ExcelTable(ExcelObject):
         wb = ws.parent
         fmls = fmls or [pd.DataFrame(columns=['code', 'dependent'])]
         external_links = [key for key in set(wb.links.keys()) & set(f"'{ws.id}'!{code}" for code in codes)]
-        etables = reduce_sets([wb.links[code] for code in external_links])
+        etables = flatten_sets([wb.links[code] for code in external_links])
         for etbl in etables:
             sht_id, tbl_id = tbl_address(etbl)
             df = wb['#' + sht_id]['#' + tbl_id].data
@@ -1851,9 +1869,9 @@ class ExcelTable(ExcelObject):
     def __setitem__(self, excel_slice, value):
         cell_rgn = list(set(self._cell_rgn(excel_slice)) & set(self.data.index))
         self.data.loc[cell_rgn, 'value'] = np.array(value).flatten()
-        codes = self.encoder('encode', cell_rgn)
+        codes = self.encoder('encode', cell_rgn, df=self.data)
         self.changed.extend(codes)
-        codes = self.encoder('encode', cell_rgn)
+        codes = self.encoder('encode', cell_rgn, df=self.data)
         self.changed.extend(codes)
 
     def __contains__(self, item):
@@ -1879,118 +1897,7 @@ class ExcelTable(ExcelObject):
         data = self.excel_table(t, fill_value='')
         return data._repr_html_()
 
-def test_Form2517():
-        filename = r"C:\Users\agmontesb\Documents\DIAN\Renta2023\Reporte_Conciliación_Fiscal_F2517V6_AG2023_v1.0.1-2024\Reporte_Conciliación_Fiscal_F2517V6_AG2023_v1.0.1-2024.xlsm"
-        wb = px.load_workbook(filename)
-
-        excel_wb = ExcelWorkbook('Form2517')
-
-        ws_name = "H2 (ESF - Patrimonio)"
-        ws = wb[ws_name]
-        wsheet = excel_wb.create_worksheet(ws_name)
-
-        # Estado de Situación Financiera
-        ws_range = "G9:K193"
-        fmls, values = data_in_range(ws, ws_range)
-        esf_tbl = ExcelTable(wsheet, 'esf_tbl', ws_range, fmls, values, recalc=True)
-        esf = esf_tbl.minimun_table()
-
-        # Patrimonio
-        ws_range = "G196:K220"
-        fmls, values = data_in_range(ws, ws_range)
-        pat_tbl = ExcelTable(wsheet, 'pat_tbl', ws_range, fmls, values, recalc=True)
-        pat = pat_tbl.minimun_table()
-
-        ws_name = "H3 (ERI - Renta Liquida)"
-        ws = wb[ws_name]
-        wsheet = excel_wb.create_worksheet(ws_name)
-
-        # Renta líquida cedular
-        ws_range = "H376:N457"      # "H10:L10"
-        fmls, values = data_in_range(ws, ws_range)
-        # values['L10'] = 33182000
-        # values['L25'] = 13287242
-        # values['M6'] = 42412
-        rlc_tbl = ExcelTable(wsheet, 'rlc_tbl', ws_range, fmls, values, recalc=True)
-        wsheet.parameters(M6 = 42414)
-        # dmy = rlc_tbl.get_formula('L412', 'H420')
-        rlc = rlc_tbl.minimun_table()
-
-        # Estado de Resultados
-        ws_range = "H9:L375"      # "H10:L10"
-        fmls, values = data_in_range(ws, ws_range)
-        edr_tbl = ExcelTable(wsheet, 'edr_tbl', ws_range, fmls, values, recalc=True)
-        edr = edr_tbl.minimun_table()
-
-
-        ws_name = 'H7 (Resumen ESF-ERI)'
-        ws = wb[ws_name]
-        wsheet = excel_wb.create_worksheet(ws_name)
-
-        ws_range = 'G11:I93'
-        fmls, values = data_in_range(ws, ws_range)
-        res_tbl = ExcelTable(wsheet, 'res_tbl', ws_range, fmls, values, recalc=True)
-        res = res_tbl.minimun_table()
-
-        wb.close()
-        return excel_wb
-
-def test_workbook():
-        filename = r"C:\Users\agmontesb\Downloads\excel_module_test.xlsx"
-        wb = px.load_workbook(filename)
-
-        excel_wb = ExcelWorkbook('excel_module_test')
-
-        ws_name = "No links, No parameters"
-        ws = wb[ws_name]
-        wsheet = excel_wb.create_worksheet(ws_name)
-
-        # Tabla 1
-        ws_range = "G4:I9"
-        fmls, values = data_in_range(ws, ws_range)
-        sh1_tbl1 = ExcelTable(wsheet, 'sh1_tbl1', ws_range, fmls, values, recalc=True)
-        m_sh1_tbl1 = sh1_tbl1.minimun_table()
-
-        # Tabla 2
-        ws_range = "G13:H15"
-        fmls, values = data_in_range(ws, ws_range)
-        sh1_tbl2 = ExcelTable(wsheet, 'sh1_tbl2', ws_range, fmls, values, recalc=True)
-        m_sh1_tbl2 = sh1_tbl2.minimun_table()
-
-        ws_name = "Parameters and inner links"
-        ws = wb[ws_name]
-        wsheet = excel_wb.create_worksheet(ws_name)
-
-        # Tabla 1
-        ws_range = "F4:H9"
-        fmls, values = data_in_range(ws, ws_range)
-        sh2_tbl1 = ExcelTable(wsheet, 'sh2_tbl1', ws_range, fmls, values, recalc=True)
-        m_sh2_tbl1 = sh2_tbl1.minimun_table()
-
-        # Tabla 2
-        ws_range = "F13:H17"
-        fmls, values = data_in_range(ws, ws_range)
-        sh2_tbl2 = ExcelTable(wsheet, 'sh2_tbl2', ws_range, fmls, values, recalc=True)
-        m_sh2_tbl2 = sh2_tbl2.minimun_table()
-
-        ws_name = "Outer links, outer parameter"
-        ws = wb[ws_name]
-        wsheet = excel_wb.create_worksheet(ws_name)
-
-        # Tabla 1
-        ws_range = "F3:H8"
-        fmls, values = data_in_range(ws, ws_range)
-        sh3_tbl1 = ExcelTable(wsheet, 'sh3_tbl1', ws_range, fmls, values, recalc=True)
-        m_sh3_tbl1 = sh3_tbl1.minimun_table()
-
-        wb.close()
-
-        return excel_wb
-
     
 
 if __name__ == '__main__':
-        import openpyxl as px
-        excel_wb = test_workbook()
-
-        pass
+    pass

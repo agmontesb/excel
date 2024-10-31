@@ -4,42 +4,41 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pandas as pd
-import pytest
 
 from utilities import TableComparator
-from excel_workbook import EMPTY_CELL
-
-@pytest.fixture
-def base_tables():
-    value_rec = pd.Series(
-            dict(fml=None, dependents=None, res_order=0, ftype='#', value=EMPTY_CELL, code=''), 
-            dtype=object
-        )
-    
-    df1 = (
-        pd.DataFrame(value_rec.to_dict(), index=pd.Index(['A1', 'A2', 'A3'], name='cell'))
-        .assign(code=lambda db: db.index.str.replace('A', 'M'))
-        .assign(dependents=lambda db: [set(), None, set([1,2,3])])
-        .sort_index()    
-    )
-
-    df2 = (
-        pd.concat(
-            [
-                df1,
-                pd.DataFrame(value_rec.to_dict(), index=pd.Index(['B5'], name='cell'))
-            ]
-        )
-        .sort_index()
-    )
-    df2.loc['A1', 'value'] = 756
-    df2.loc['B5', 'code'] = 'M32'
-
-    tdf1, tdf2 = map(TableComparator, (df1, df2))
-    yield tdf1, tdf2
+from fixtures import base_tables, static_workbook, empty_workbook
 
 
 class TestTableComparator:
+
+    def test_base_codes(self, static_workbook, empty_workbook):
+        base_tbl = static_workbook.sheets[0].tables[0]
+        tbl1 = empty_workbook.create_worksheet('sheet1').create_table(base_tbl.title, base_tbl.data_rng)
+
+        df1 = base_tbl.data
+        tdf1 = TableComparator(df1)
+
+        values = df1.value
+        fmls = df1.loc[df1.fml != ''].fml.apply(lambda x: base_tbl.encoder('decode', x, df=base_tbl.data))
+        value_cells = list(set(values.index) - set(fmls.index))
+        values = values.loc[value_cells].to_dict()
+        fmls = fmls.to_dict()
+
+        tbl1.set_records(fmls, field='fml')
+        tbl1.set_records(values, field='value')
+        tbl1.recalculate(recalc=True)
+        tdf2 = TableComparator(tbl1.data)
+
+        tbl1.set_records({'I3': 10, 'G3': 20, 'H3': 30}, field='value')
+        tbl1.recalculate(recalc=True)
+
+        df2 = tbl1.data
+        tdf2 = TableComparator(df2)
+
+        dmy = tdf1 ^ tdf2
+
+        pass
+
     def test_union_operator(self, base_tables):
         tdf1, tdf2 = base_tables
         df = tdf1 | tdf2

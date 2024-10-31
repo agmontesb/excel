@@ -12,64 +12,11 @@ import functools
 from excel_workbook import (
     ExcelWorkbook, ExcelTable, 
     cell_address, cell_pattern, 
-    data_in_range, tbl_address, rgn_pattern,
+    tbl_address, rgn_pattern,
     CIRCULAR_REF, 
     )
-from utilities import TableComparator
-
-@pytest.fixture
-def base_workbook():
-    case = 1
-    # Create a base workbook for testing
-    filename = r"C:\Users\agmontesb\Downloads\excel_module_test.xlsx"
-    wb = px.load_workbook(filename)
-
-    excel_wb = ExcelWorkbook('excel_module_test')
-
-    ws_name = "No links, No parameters"
-    ws = wb[ws_name]
-    wsheet = excel_wb.create_worksheet(ws_name)
-
-    # Tabla 1
-    ws_range = ["G4:I9", "F3:I9"][case]
-    fmls, values = data_in_range(ws, ws_range)
-    sh1_tbl1 = ExcelTable(wsheet, 'sh1_tbl1', ws_range, fmls, values, recalc=True)
-    # m_sh1_tbl1 = sh1_tbl1.minimun_table()
-
-    # Tabla 2
-    ws_range = ["G11:H15", "F12:H15"][case]
-    fmls, values = data_in_range(ws, ws_range)
-    sh1_tbl2 = ExcelTable(wsheet, 'sh1_tbl2', ws_range, fmls, values, recalc=True)
-    m_sh1_tbl2 = sh1_tbl2.minimun_table()
-
-    ws_name = "Parameters and inner links"
-    ws = wb[ws_name]
-    wsheet = excel_wb.create_worksheet(ws_name)
-
-    # Tabla 1
-    ws_range = ["F4:H9", "E3:H9"][case]
-    fmls, values = data_in_range(ws, ws_range)
-    sh2_tbl1 = ExcelTable(wsheet, 'sh2_tbl1', ws_range, fmls, values, recalc=True)
-    # m_sh2_tbl1 = sh2_tbl1.minimun_table()
-
-    # Tabla 2
-    ws_range = ["F13:H17", "E12:H17"][case]
-    fmls, values = data_in_range(ws, ws_range)
-    sh2_tbl2 = ExcelTable(wsheet, 'sh2_tbl2', ws_range, fmls, values, recalc=True)
-    # m_sh2_tbl2 = sh2_tbl2.minimun_table()
-
-    ws_name = "Outer links, outer parameter"
-    ws = wb[ws_name]
-    wsheet = excel_wb.create_worksheet(ws_name)
-
-    # Tabla 1
-    ws_range = ["F3:H8", "E2:H8"][case]
-    fmls, values = data_in_range(ws, ws_range)
-    sh3_tbl1 = ExcelTable(wsheet, 'sh3_tbl1', ws_range, fmls, values, recalc=True)
-    # m_sh3_tbl1 = sh3_tbl1.minimun_table()
-
-    wb.close()
-    return excel_wb
+from utilities import TableComparator, tbl_data
+from fixtures import static_workbook as base_workbook
 
 
 class TestBaseWorkbook:
@@ -99,7 +46,7 @@ class TestBaseWorkbook:
         assert sheet.parent is base_workbook
         assert sheet.id == 'sheet'
 
-        table_names = ['sh1_tbl1', 'sh1_tbl2']
+        table_names = ['sht1_tbl2', 'sht1_tbl2']
         assert sheet.tablenames == table_names
         assert sheet.tables == [sheet[sheet_name] for sheet_name in table_names]
 
@@ -109,8 +56,8 @@ class TestBaseWorkbook:
         assert all(sheet[f'#{id}'].title == table_name for id, table_name in zip(sheet_ids, table_names))
 
     def test_base_table(self, base_workbook):
-        table = base_workbook['No links, No parameters']['sh1_tbl1']
-        assert table.title == 'sh1_tbl1'
+        table = base_workbook['No links, No parameters']['sht1_tbl1']
+        assert table.title == 'sht1_tbl1'
         assert table.parent is base_workbook['No links, No parameters']
         assert table.id == 'A'
 
@@ -119,7 +66,7 @@ class TestBaseWorkbook:
         assert table.changed == []
 
         assert table.parent.index(table) == 0
-        assert table.parent.objectnames() == ['sh1_tbl1', 'sh1_tbl2']
+        assert table.parent.objectnames() == ['sht1_tbl1', 'sht1_tbl2']
 
     def test_ws_parameters(self, base_workbook):
         ws = base_workbook['Parameters and inner links']
@@ -127,11 +74,11 @@ class TestBaseWorkbook:
         assert ws.parameters('G2') == [0]
 
         associated_tables = ws.associated_table('G2', scope='parameter')
-        assert sorted(tbl.title for tbl in associated_tables) == ['sh2_tbl2', 'sh3_tbl1']
+        assert sorted(tbl.title for tbl in associated_tables) == ['sht2_tbl2', 'sht3_tbl1']
 
         param_code = ws.parameter_code('G2')
         dependents = [
-            tbl.encoder('decode', tbl.get_cells_to_calc([param_code]))
+            tbl.encoder('decode', tbl.get_cells_to_calc([param_code]), df=tbl.data)
             for tbl in associated_tables
             ]
         old_values = [
@@ -152,7 +99,7 @@ class TestBaseWorkbook:
 
     def test_ws_cell_values(self, base_workbook):
         ws = base_workbook['Outer links, outer parameter']
-        tbl = ws['sh3_tbl1']
+        tbl = ws['sht3_tbl1']
 
         links = tbl.links()
         links.append('A1')  # Not in the table range nor in the links
@@ -169,7 +116,7 @@ class TestHelperMethods:
     def test_offset_rng(self, base_workbook):
         wb = base_workbook
         ws = wb['Parameters and inner links']
-        tbl = ws['sh2_tbl1']
+        tbl = ws['sht2_tbl1']
 
         # Offset single cell
         assert tbl.offset_rng('A1', row_offset=1) == 'A2', 'Offset row'
@@ -214,13 +161,13 @@ class TestModTables:
 
         wb = base_workbook
         ws = wb['Parameters and inner links']
-        tbl = ws['sh2_tbl1']
+        tbl = ws['sht2_tbl1']
 
         ins_slice = '6'
         ins_rng = [f"'{ws.title}'!A6"]
 
         all_dep = pd.concat([
-            tbl.all_dependents(cells)
+            tbl.direct_dependents(cells)
             for tbl in ws.tables
             if (cells := tbl.cells_in_data_rng(tbl.data.index.tolist()))
         ])
@@ -250,7 +197,7 @@ class TestModTables:
         for tbl_code, fml in fmls.fml.items():
             sht_id, tbl_id, _ = cell_pattern.match(tbl_code).groups()
             ltbl = wb['#' + sht_id]['#' + tbl_id]
-            fmls1.append(ltbl.encoder('decode', fml))
+            fmls1.append(ltbl.encoder('decode', fml), df=ltbl.data)
 
         # Insert a row
         ws.insert(ins_slice)
@@ -259,7 +206,7 @@ class TestModTables:
         for tbl_code, fml in fmls.fml.items():
             sht_id, tbl_id, _ = cell_pattern.match(tbl_code).groups()
             ltbl = wb['#' + sht_id]['#' + tbl_id]
-            fmls1.append(ltbl.encoder('decode', fml))
+            fmls2.append(ltbl.encoder('decode', fml, df=ltbl.data))
 
 
         flags = []
@@ -279,8 +226,35 @@ class TestModTables:
 
 class TestSetRecordsTable:
 
+    @pytest.mark.parametrize("ws_name, tbl_name, tbl_range", [
+        ('No links, No parameters', 'sht1_tbl1', 'F3:I9'),
+        ('No links, No parameters', 'sht1_tbl2', 'F12:H15'),
+        ('Parameters and inner links', 'sht2_tbl1', 'E3:H9'),
+        ('Parameters and inner links', 'sht2_tbl2', 'E12:H17'),
+        ('Outer links, outer parameter', 'sht3_tbl1', 'E3:H8'),
+    ])
+    def test_table_creation(self, ws_name, tbl_name, tbl_range, base_workbook):
+            sht_tbl = base_workbook[ws_name][tbl_name]
+            base_df = sht_tbl.data.copy()
+            sht_tbl.data = ExcelTable.create_dataframe()
+            fmls, values, tblv = tbl_data(tbl_name, tbl_range)
+            sht_tbl.set_records(fmls, field='fml')
+            sht_tbl.set_records(values, field='value')
+            sht_tbl.recalculate(recalc=True)
+            # Se verifica que se reconstuyen los valores de la tabla
+            df = sht_tbl.data
+            assert (df.loc[tblv.index].value.map(str) == tblv).all()
+            assert (
+                TableComparator(base_df)
+                .symmetric_difference(
+                    TableComparator(df),
+                    fields=['res_order', 'value']
+                )
+            ).empty
+
+
     @pytest.mark.parametrize("set_up, values, answer", [
-        (dict(G3='=10+F3', H3='=10+G3', F3='10+H3'), dict(G6='=G3+100'),
+        (dict(G3='=10+F3', H3='=10+G3', F3='=10+H3'), dict(G6='=G3+100'),
         {'F3': '0', 'G3': '', 'H3': ''}
         ),
         (dict(F3='=10',G3='=10+F3', H3='=10+G3', G6='=G3+100'), dict(F3='10+H3'),
@@ -298,7 +272,7 @@ class TestSetRecordsTable:
     ])
     def test_circular_reference_cell(self, base_workbook, set_up, values, answer):
         values = values or {}
-        tbl = base_workbook['Parameters and inner links']['sh2_tbl1']
+        tbl = base_workbook['Parameters and inner links']['sht2_tbl1']
         tbl.set_records(set_up, field='fml')
         tbl.recalculate(recalc=True)
         if values:
@@ -330,7 +304,7 @@ class TestSetRecordsTable:
         ),
     ])
     def test_empty_cell_reference(self, base_workbook, set_up, values, answer):
-        tbl = base_workbook['Parameters and inner links']['sh2_tbl2']
+        tbl = base_workbook['Parameters and inner links']['sht2_tbl2']
         tbl.set_records(set_up, field='fml')
         tbl.recalculate(recalc=True)
         key = list(values.keys())[0]
@@ -346,7 +320,7 @@ class TestSetRecordsTable:
     @pytest.mark.parametrize("values, answer", [
         (
            dict(F13='=+F15+F12', G12='=+E12&F12'),   # Fórmula con referencia a celda vacía.
-            {'F13': '15', 'G12': 'tabla2:', 'G16': '2428', 'G17': '2491', 'H16': '2508', 'H17': '2596'}
+            {'F13': '15', 'G12': 'tabla 2:', 'G16': '2428', 'G17': '2491', 'H16': '2508', 'H17': '2596'}
         ),
         (
             dict(F13='=F5 + G13', F15='=+F14+G14'),   # Creación de nuevo enlace externo
@@ -367,7 +341,7 @@ class TestSetRecordsTable:
     ])
     def test_field_fml(self, values, answer, base_workbook):
         field = 'fml'
-        tbl = base_workbook['Parameters and inner links']['sh2_tbl2']
+        tbl = base_workbook['Parameters and inner links']['sht2_tbl2']
         tbl.set_records(values, field=field)
         tbl.recalculate(recalc=True)
         assert (tbl.data.loc[answer.keys()].value.apply(str) == pd.Series(answer)).all()
@@ -389,7 +363,7 @@ class TestSetRecordsTable:
     ])
     def test_field_value(self, values, answer, base_workbook):
         field = 'value'
-        tbl = base_workbook['Parameters and inner links']['sh2_tbl2']
+        tbl = base_workbook['Parameters and inner links']['sht2_tbl2']
         tbl.set_records(values, field=field)
         tbl.recalculate(recalc=True)
         assert (tbl.data.loc[answer.keys()].value.apply(str) == pd.Series(answer)).all()
