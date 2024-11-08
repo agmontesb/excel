@@ -16,9 +16,15 @@ class TableComparator:
     sort_key = staticmethod(lambda x: '{0}{2: >4s}{1: >3s}'.format(*cell_pattern.match(x).groups()))
     sort_fnc = staticmethod(lambda x: x.map(lambda x: '{0}{2: >4s}{1: >3s}'.format(*cell_pattern.match(x).groups())))
 
-    def __init__(self, df):
-        equiv = df.code.to_frame()
-        self.df = self.decode_df(df, equiv)
+    def __init__(self, input_df):
+        # equiv = df.code.to_frame()
+        # self.df = self.decode_df(df, equiv)
+        df = input_df.copy()
+        if df.dependents.dtype == set:
+            df.loc[:, 'dependents'] = df.dependents.astype(str).apply(lambda x: x.replace("'", '"'))
+        if df.index.name == 'cell':
+            df.reset_index(inplace=True)
+        self.df = df
 
     def difference(self, other, fields=None):
         df = self.__sub__(other, fields=fields)
@@ -31,35 +37,35 @@ class TableComparator:
         df = (
             pd.concat([self.df, other.df])
             .drop_duplicates(subset=fields)
-            .assign(dependents=lambda db: db.dependents.apply(lambda x: eval(x) if x != 'nan' else set()))
-            .sort_index(key=self.sort_fnc)
+            # .assign(dependents=lambda db: db.dependents.apply(lambda x: eval(x) if x != 'nan' else set()))
+            .sort_values(by='cell', key=self.sort_fnc)
         )
-        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
+        # df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
         return df
     
     def __and__(self, other):
         x = self ^ other
-        df = self.df.loc[~self.df.index.isin(x.index)]
-        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
-        df = df.sort_index(key=self.sort_fnc)
+        df = self.df.loc[~self.df.cell.isin(x.cell)]
+        # df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
+        df = df.sort_values(by='cell', key=self.sort_fnc)
         return df
     
     def __sub__(self, other, fields=None):
         x = self.__xor__(other, fields=fields)
-        df = x.loc[x.index.isin(self.df.index)]
+        df = x.loc[x.cell.isin(self.df.cell)]
         df = df.drop_duplicates(subset=['code'], keep='first')
-        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
-        df = df.sort_index(key=self.sort_fnc)
+        # df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
+        df = df.sort_values(by='cell', key=self.sort_fnc)
         return df
     
     def __xor__(self, other, fields=None):
         df = (
             pd.concat([self.df, other.df])
             .drop_duplicates(subset=fields, keep=False)
-            .assign(dependents=lambda db: db.dependents.apply(lambda x: eval(x) if x != 'nan' else set()))
-            .sort_index(key=self.sort_fnc)
+            # .assign(dependents=lambda db: db.dependents.apply(lambda x: eval(x) if x != 'nan' else set()))
+            .sort_values(by='cell', key=self.sort_fnc)
         )
-        df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
+        # df.loc[:, 'dependents'] = df.dependents.where(~df.dependents.isna(), set())
         return df
     
     def __eq__(self, other):
@@ -101,7 +107,7 @@ class TableComparator:
     def decode_df(input_df, equiv):
         df = input_df.copy()
         if df.dependents.dtype == set:
-            df.loc[:, 'dependents'] = df.dependents.apply(lambda x: str(x))
+            df.loc[:, 'dependents'] = df.dependents.astype(str).apply(lambda x: x.replace("'", '"'))
 
         df.loc[:, ['code', 'fml', 'dependents']] = (
             df.loc[:, ['code', 'fml', 'dependents']]
@@ -183,3 +189,38 @@ def wb_from_excelfile(filename, wb_structure):
     wb.close()
     return excel_wb
 
+def address_id(cell, nbase=4, max_col=None):
+    '''
+    Convierte una dirección de celda a un número entero.
+    cell: str. Dirección de celda. Ej: 'A10'
+
+    '''
+    if max_col is None:
+        max_col = sum(nbase ** (k + 1) for k in range(nbase))
+    row, col = cell_address(cell)
+    t0 = (int(row) - 1) * max_col
+    t = col[::-1]
+    for k, c in enumerate(t):
+        t0 += (ord(c) - ord('A') + 1) * nbase ** k
+    return t0
+
+
+def id_address(id, nbase=4, max_col=None):
+    '''
+    Convierte un número entero a una dirección de celda.
+    id: int. Número entero. Ej: 10
+    '''
+    if max_col is None:
+        max_col = sum(nbase ** (k + 1) for k in range(nbase))
+    row = id // max_col
+    id = id - row * max_col
+    row += 1
+    answ = [str(row)]
+    while id:
+        res = id % nbase
+        id = id // nbase
+        if res == 0:
+            res = nbase
+            id -=1
+        answ.append(chr(ord('A') + res - 1))
+    return ''.join(answ[::-1])

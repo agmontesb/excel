@@ -40,28 +40,67 @@ class XlFlags(Flag):
     EMPTY_CELL = 2
     VALUE_CELL = 4
 
-class XlErrors(Enum):
-  REF_ERROR = "#REF!"
-  VALUE_ERROR = "#VALUE!"
-  DIV_ZERO_ERROR = "#DIV/0!"
-  NAME_ERROR = "#NAME?"
-  NUM_ERROR = "#NUM!"
-  NULL_ERROR = "#NULL!"
-  GETTING_DATA_ERROR = "#GETTING_DATA"
-  SPILL_ERROR = "#SPILL!"
-  UNKNOWN_ERROR = "#UNKNOWN!"
-  # Add more Excel error types here as needed
 
-  def __str__(self):
-    return self.value
-  
-  @property
-  def code(self):
-    id = list(self.__class__._value2member_map_.keys()).index(self.value)
-    return f'Z{id}'
-  
+class Inmutable:
+    def __add__(self, other):
+        return self
 
-class CircularRef:
+    def __radd__(self, other):
+        return self
+
+    def __sub__(self, other):
+        return self
+
+    def __rsub__(self, other):
+        return self
+
+    def __mul__(self, other):
+        return self
+
+    def __rmul__(self, other):
+        return self
+
+    def __truediv__(self, other):
+        return self
+
+    def __rtruediv__(self, other):
+        return self
+
+    def __eq__(self, other: object) -> bool:
+        return True if isinstance(other, self.__class__) else False
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return super().__hash__()
+
+
+class XlErrors(Inmutable, Enum):
+    REF_ERROR = "#REF!"
+    VALUE_ERROR = "#VALUE!"
+    DIV_ZERO_ERROR = "#DIV/0!"
+    NAME_ERROR = "#NAME?"
+    NUM_ERROR = "#NUM!"
+    NULL_ERROR = "#NULL!"
+    GETTING_DATA_ERROR = "#GETTING_DATA"
+    SPILL_ERROR = "#SPILL!"
+    UNKNOWN_ERROR = "#UNKNOWN!"
+    # Add more Excel error types here as needed
+
+    def __str__(self):
+        return self.value
+
+    @property
+    def code(self):
+        id = list(self.__class__._value2member_map_.keys()).index(self.value)
+        return f'Z{id}'
+  
+    def __hash__(self):
+        return super().__hash__()
+    
+
+class CircularRef(Inmutable):
     value = 0
 
     @classmethod
@@ -72,38 +111,9 @@ class CircularRef:
         self.value = value or 0
         return self
     
-    def __add__(self, other):
-        return CIRCULAR_REF
-
-    def __radd__(self, other):
-        return CIRCULAR_REF
-
-    def __sub__(self, other):
-        return CIRCULAR_REF
-
-    def __rsub__(self, other):
-        return CIRCULAR_REF
-
-    def __mul__(self, other):
-        return CIRCULAR_REF
-
-    def __rmul__(self, other):
-        return CIRCULAR_REF
-
-    def __truediv__(self, other):
-        return CIRCULAR_REF
-
-    def __rtruediv__(self, other):
-        return CIRCULAR_REF
-
     def __str__(self):
         return str(self.value)
     
-    def __eq__(self, other: object) -> bool:
-        return True if isinstance(other, CircularRef) else False
-
-    def __ne__(self, other: object) -> bool:
-        return not self.__eq__(other)
 
 
 class EmptyCell:
@@ -160,6 +170,7 @@ token_specification = [
 ]
 tokenizer = re.compile('|'.join('(?P<%s>%s)' % pair for pair in token_specification))
 
+link_pattern = re.compile(r"((?:'(?:.+?)'!)+(?:\$?[A-Z])+(?:\$?[0-9])+)")
 cell_pattern = re.compile(r"(?:'(?P<sht>.+?)'!)*(?P<col>\$?[A-Z]+)(?P<row>\$?[0-9]+)")
 cell_address:Callable[[str], tuple[str, ...]] = lambda cell: tuple(x for x in cell_pattern.search(cell).groups()[::-1] if x)
 rgn_pattern = re.compile(r"(?:'.+?'!)*\$?[A-Z]\$?[0-9]+(?::\$?[A-Z]\$?[0-9]+)?")
@@ -349,7 +360,23 @@ class ExcelCollection(ExcelObject, ABC):
         if ins_point:
             self.move_object(obj.title, ins_point)
         return obj
+    
+    @property
+    def data(self):
+        data = []
+        for item in self._objects:
+            df = item.data
+            if 'tbl_id' not in df.columns:
+                df = (
+                    df
+                    .assign(
+                        tbl_id=f"'{self.id}'!{item.id}", 
+                        dependents=lambda db: db.dependents.astype(str).apply(lambda x: x.replace("'", '"'))
+                    )
+            )
 
+            data.append(df)
+        return pd.concat(data)
 
 class ExcelWorkbook(ExcelCollection):
 
@@ -386,7 +413,7 @@ class ExcelWorksheet(ExcelCollection):
         self._param_map = {}
         self._data_rgn = None
         pass
-
+   
     def reset_link(self, tbl: 'ExcelTable', link_code: str, reset_params=False):
         wb = self.parent
         sht, cell = tbl_address(link_code)
@@ -441,25 +468,25 @@ class ExcelWorksheet(ExcelCollection):
         mask = df.code.isin(circular_refs)
         tbl.data.loc[mask, 'value'] = CIRCULAR_REF
 
-    def register_code(self, tbl, xl_error, codes):
+    def register_code(self, tbl, code_link, codes, default_value=None):
             df = tbl.data
-            err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{self.title}'!{xl_error.code}"], default_value=xl_error)))
+            err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [code_link], default_value=default_value)))
             try:
                 error_rec = df.loc[err_cell].copy()
             except:
                 # Si no existe código del error en la tabla, se crea un nuevo registro para el error
                 error_rec = pd.Series(
-                    dict(fml=None, dependents=set(), res_order=0, ftype='$', value=err_value, code=err_code), 
+                    dict(fml='', dependents=set(), res_order=0, ftype='$', value=err_value, code=err_code), 
                     dtype=object
                 )
             # Se agrega el código de la celda al campo dependents del registro del error
             error_rec.dependents.update(tbl_address(x)[-1] for x in codes)
             df.loc[err_cell] = error_rec
 
-    def unregister_code(self, tbl, xl_error, codes):
+    def unregister_code(self, tbl, code_link, codes, default_value=None):
             wb = self.parent
             df = tbl.data
-            err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{self.title}'!{xl_error.code}"], default_value=xl_error)))
+            err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [code_link], default_value=default_value)))
             error_rec = df.loc[err_cell].copy()
             # Se agrega el código de la celda al campo dependents del registro del error
             error_rec.dependents.difference_update(tbl_address(x)[-1] for x in codes)
@@ -478,6 +505,7 @@ class ExcelWorksheet(ExcelCollection):
         wb = self.parent
         to_process = {}
         if codes is None:
+            assert xl_error is XlErrors.REF_ERROR
             # Se quiere registrar todos los códigos de las celdas que tienen un error
             # por el momento esto se hace solo en REF_ERROR ya que los otros salen del cálculo
             # de las celdas.
@@ -497,12 +525,36 @@ class ExcelWorksheet(ExcelCollection):
                 # Se consigna para procesamiento en la clave de la tabla correspondiente
                 to_process.setdefault(tbl, set()).add(code)
             fnc: Callable[[ExcelTable, XlErrors, Iterable[str]], None] = self.register_code if reg_value is None else self.unregister_code
-            [fnc(tbl, xl_error, codes) for tbl, codes in to_process.items()]
+            [fnc(tbl, xl_error.code, codes, default_value=xl_error) for tbl, codes in to_process.items()]
 
         propagate_error = self.all_dependents(to_process)
         reg_value = reg_value or xl_error
+        rng_codes = None
         for tbl, codes in propagate_error.items():
             cells = [ExcelTable.encoder('decode', x, df=tbl.data) for x in codes]
+            # if xl_error is XlErrors.REF_ERROR:
+            #     rng_codes = rng_codes or [f"'{tbl.parent.id}'!{x}" for x in codes for tbl, codes in to_process.items()]
+            #     pattern = rgn_pattern
+            #     mask = tbl.data.loc[cells].fml.str.len() > 0
+            #     fmls = tbl.data.loc[mask].fml
+            #     for old_code in codes:
+            #         def replacement(m):
+            #             pattern = r"(?:'({0})'!)*(\$?{1})(\$?{2})".format(*cell_pattern.match(old_code).groups())
+            #             if ':' in m[0]:
+            #                 if all(x in rng_codes for x in m[0].split(':')):
+            #                     return code
+            #                 return re.sub(pattern, lambda m: pass_anchors(m[0], rng_codes[old_code]), m[0])
+            #             elif re.match(pattern, m[0]):
+            #                 return code
+            #             else:
+            #                 return m[0]
+
+            #         fmls = fmls.str.replace(
+            #             pattern,
+            #             replacement,
+            #             regex=True
+            #         )
+            #     reg_value = tbl.data.loc[cells].value # SOLO MieNTRAS SE desarrolla
             tbl.data.loc[cells, 'value'] = reg_value
 
     def insert(self, cell_slice, from_delete=False):
@@ -528,7 +580,7 @@ class ExcelWorksheet(ExcelCollection):
         wb = ws.parent
 
         for tbl in self.tables:
-            if (data_rng := tbl.offset_rng(tbl.data_rng, **kwargs)) == tbl.data_rng:
+            if (data_rng := tbl.offset_rng(tbl.data_rng, **kwargs, tbl=tbl)) == tbl.data_rng:
                 continue
 
             df = tbl.data
@@ -538,7 +590,7 @@ class ExcelWorksheet(ExcelCollection):
             tbl.data_rng = data_rng
 
             # modificación del índice del tbl.data frame (cells labels)
-            cells_map = tbl.offset_rng(cells, **kwargs)
+            cells_map = tbl.offset_rng(cells, **kwargs, tbl=tbl)
             tbl.data.rename(index=cells_map, inplace=True)
 
             # modificación enlaces externos a cells modificadas
@@ -574,46 +626,62 @@ class ExcelWorksheet(ExcelCollection):
             cmin, cmax = map(ord, excel_slice)
             rmin, rmax = map(int, (rmin, rmax))
 
-        nitems = fnc(excel_slice[1]) - fnc(excel_slice[0]) + 1
+        nitems = -(fnc(excel_slice[1]) - fnc(excel_slice[0]) + 1)
         kwargs = {field: nitems}
-        kwargs['disc_cell'] = f'A{excel_slice[0]}' if is_numeric else f'{excel_slice[0]}1'
+        disc_cell = f'A{excel_slice[0]}' if is_numeric else f'{excel_slice[0]}1'
+        kwargs['disc_cell'] = ExcelTable.offset_rng(disc_cell, **{field: -1})
 
         all_cells = [f'{chr(col)}{row}' for col in range(cmin, cmax + 1) for row in range(rmin, rmax + 1)]
         ws = self
         wb = ws.parent
 
-        for tbl in self.tables:
-            if not (cells := tbl.cells_in_data_rng(all_cells)):
-                continue
-            df = tbl.data
-            cells = list(set(cells) & set(df.index))
-            codes = df.loc[cells].code.tolist()
-            off_cells = tbl.offset_rng(cells, **kwargs).values()
-            off_codes = df.loc[off_cells].code.tolist()
-            rgn_codes = dict(zip(codes, off_codes))
-            err_cell, err_code, err_value = next(zip(*self.register_links(tbl, [f"'{ws.title}'!{XlErrors.REF_ERROR.code}"], default_value=XlErrors.REF_ERROR)))
-            changes = {code: err_code for code in codes}
-            tbl.set_field(changes, field='code', rng_codes=rgn_codes)
-            changes = {f"'{ws.id}'!{code}": err_code for code in codes}
-            self.broadcast_changes(changes, field='code')
-
-        assert not df.index.isin(cells).any(), 'Insert: Not all cells has been displaced'
-        self.insert(cell_slice, from_delete=True)
-        self.propagate_error(XlErrors.REF_ERROR)
+        to_process = {}
         for tbl in self.tables:
             if not (cells := tbl.cells_in_data_rng(all_cells)):
                 continue
             cells = list(set(cells) & set(tbl.data.index))
-            df = tbl.data.loc[cells]
-            codes = df.code.tolist()
-            mask =  ~df.dependents.isna()
-            all_dependents = flatten_sets(df.loc[mask].dependents.tolist())
-            all_dependents = all_dependents - set(codes)
-            mask = tbl.data.code.isin(all_dependents) & ~tbl.data.value.isin(list(XlErrors))
-            if mask.any():
-                changed = tbl.data.loc[mask].code.tolist()
+            df = tbl.data
+            codes = df.loc[cells].code.tolist()
+            to_process[tbl] = set(codes)
+        all_dependents = self.all_dependents(to_process=to_process.copy())
+        [all_dependents[tbl].difference_update(to_process[tbl]) for tbl in to_process]
+
+        for tbl, codes in to_process.items():
+            tbl: ExcelTable
+            df = tbl.data
+            cells, codes = zip(*list(df.loc[df.code.isin(codes)].code.items()))
+            off_cells = tbl.offset_rng(cells, **kwargs, tbl=tbl).values()
+            off_codes = df.loc[off_cells].code.tolist()
+            rgn_codes = dict(zip(codes, off_codes))
+            _, err_code, _ = next(zip(*self.register_links(tbl, [f"'{ws.title}'!{XlErrors.REF_ERROR.code}"], default_value=XlErrors.REF_ERROR)))
+            tbl.data = tbl.set_field(rgn_codes, field='code', err_ref_code=err_code)
+            changes = {f"'{ws.id}'!{code}": err_code for code in codes}
+            self.broadcast_changes(changes, field='code')
+
+        self.insert(cell_slice, from_delete=True)
+        self.propagate_error(XlErrors.REF_ERROR)
+
+        for tbl, codes in all_dependents.items():
+            data = tbl.data
+            df = data.loc[data.code.isin(codes)]
+            codes = df.loc[df.value.isin(list(XlErrors))].code.tolist()
+            dependents = flatten_sets(df.dependents.tolist()) | set(df.code)
+            changed = dependents - set(codes)
+            if changed:
                 tbl.changed.extend(changed)
                 tbl.recalculate(recalc=True)
+
+        # for tbl in self.tables:
+        #     if not (cells := tbl.cells_in_data_rng(all_cells)):
+        #         continue
+        #     cells = list(set(cells) & set(tbl.data.index))
+        #     df = tbl.data.loc[cells]
+        #     codes = df.loc[df.value.isin(list(XlErrors))].code.tolist()
+        #     all_dependents = flatten_sets(df.dependents.tolist()) | set(df.code)
+        #     changed = all_dependents - set(codes)
+        #     if changed:
+        #         tbl.changed.extend(changed)
+        #         tbl.recalculate(recalc=True)
         pass
 
 
@@ -784,10 +852,10 @@ class ExcelWorksheet(ExcelCollection):
                         tbl.set_values(mapper, field=field, recalc=True)
                     case 'cell':  # field == 'cell'
                         mapper = {cell: changes[cell].replace(f"'{ws.title}'!", '') for cell in cells}
-                        tbl.set_field(mapper, field='cell')
+                        tbl.data = tbl.set_field(mapper, field='cell')
                     case 'code':  # field == 'code'
                         mapper = {cell: changes[cell] for cell in cells}
-                        tbl.set_field(mapper, field='code')
+                        tbl.data = tbl.set_field(mapper, field='code')
                     case _:
                         pass
         pass
@@ -1155,7 +1223,7 @@ class ExcelTable(ExcelObject):
             # Asignación de code para los enlaces (links)
             old_codes = df.loc[links, 'code'].tolist()
             changes = dict(zip(old_codes, code_links))
-            self.set_field(changes, field='code')
+            self.data = df =self.set_field(changes, field='code')
             # Asignación de valores para los enlaces (links)
             df.loc[links, 'value'] = link_values
             self.changed.extend(code_links)
@@ -1182,62 +1250,77 @@ class ExcelTable(ExcelObject):
         ndx = self.parent.index(self)
         self.parent._objects.pop(ndx)
 
-    def set_field(self, changes: dict[str, Any], *, field: Literal['code', 'cell']= 'code', rng_codes: dict[str, str] | None = None):
-        assert (df := self.data) is not None, 'Table not initialized'
-        rng_codes = rng_codes or {}
+    def set_field(self, changes: dict[str, Any], *, field: Literal['code', 'cell']= 'code', err_ref_code: str | None = None, data=None):
+        df = data if isinstance(data, pd.DataFrame) else self.data
         ws = self.parent
         if field == 'code':
-            old_codes = list(changes.keys())
-            if not (gmask := df.code.isin(old_codes)).any():
-                return
-            old_codes, dependents = zip(*df.loc[gmask, ['code', 'dependents']].values)
-            code_links = [changes[key] for key in old_codes]
-            is_delete_operation = len(set(code_links)) == 1 and code_links[0].endswith(XlErrors.REF_ERROR.code)
-            for dependents_set, old_code, code in zip(dependents, old_codes, code_links):
-                if not isinstance(dependents_set, set):
-                    continue
-                mask = df.code.isin(dependents_set)
-                if not is_delete_operation:
-                    pattern = r"(?:'({0})'!)*(\$?{1})(\$?{2})".format(*cell_pattern.match(old_code).groups())
-                    replacement = lambda m: pass_anchors(m[0], code)
-                else:
-                    pattern = rgn_pattern
-                    def replacement(m):
-                        pattern = r"(?:'({0})'!)*(\$?{1})(\$?{2})".format(*cell_pattern.match(old_code).groups())
-                        if ':' in m[0]:
-                            if all(x in rng_codes for x in m[0].split(':')):
-                                return code
-                            return re.sub(pattern, lambda m: pass_anchors(m[0], rng_codes[old_code]), m[0])
-                        elif re.match(pattern, m[0]):
-                            return code
-                        else:
-                            return m[0]
+            if not (gmask := df.code.isin(list(changes.keys()))).any():
+                return df
+            direct_desc = flatten_sets(df.loc[gmask].dependents) - changes.keys()
+            mask = df.code.isin(direct_desc)
+            pattern = rgn_pattern
+            def replacement(m):
+                if ':' in m[0]:
+                    m = tbl_pattern.match(m[0])
+                    linf, lsup = m[0].replace('$', '').split(':')
+                    if m[1]:
+                        linf, lsup = map(lambda x: f"'{m[1]}'!{x}", (linf, lsup))
+                    if all(x in changes for x in (linf, lsup)):
+                        return err_ref_code
+                    linf = changes.get(linf, linf)
+                    lsup = changes.get(lsup, lsup)
+                    if m[1]:
+                        lsup = lsup.split('!')[1]
+                    linf, lsup = map(lambda tpl: pass_anchors(*tpl), zip(m[0].split(':'), (linf, lsup)))
+                    sub_str = ':'.join([linf, lsup])
+                    return sub_str
+                key = m[0].replace('$', '')
+                return (err_ref_code or pass_anchors(m[0], changes[key])) if key in changes else m[0]
 
-                df.loc[mask, 'fml'] = df[mask].fml.str.replace(
-                    pattern,
-                    replacement,
-                    regex=True
-                )
-            df.loc[gmask, 'code'] = code_links
-            if is_delete_operation and df.code.tolist().count(code_links[0]) > 1:
-                err_code = code_links[0]
-                err_cell = err_code.replace(f"'{ws.id}'!Z", '')
-                # Se eliminan las filas duplicadas que resultan de la eliminación de enlaces a 
-                # celdas inexistentes
-                df.drop_duplicates(subset=['code'], inplace=True, keep=False)
-                # Se identifican los errors origens
-                mask = df.fml.fillna('').str.contains(err_code)
-                error_origens = set(df.loc[mask, 'code'])
-                df.loc[err_cell, ['code', 'fml','dependents', 'res_order', 'ftype', 'value']] = [err_code, None, error_origens, 0, '$', XlErrors.REF_ERROR]
+            df.loc[mask, 'fml'] = df[mask].fml.str.replace(
+                pattern,
+                replacement,
+                regex=True
+            )            
+            # Modificación de códigos
+            df.loc[gmask, 'code'] = err_ref_code or [changes[key] for key in df.loc[gmask].code]
+
+            if err_ref_code:
+                # Aseguramos que el código de error esta registrado en la tabla.
+                # Si no existe, se crea un registro para el error y si existe no hace nada
+                ws = self.parent
+                cell_link = ws.parent[f'#{tbl_address(err_ref_code)[0]}'].title
+                cell_link = f"'{cell_link}'!{XlErrors.REF_ERROR.code}"
+                ws.register_code(self, cell_link, [], default_value=XlErrors.REF_ERROR)
+                if df.code.tolist().count(err_ref_code) > 1:
+                    err_code = err_ref_code
+                    err_cell = cell_link.replace(f"'{ws.title}'!", '')
+                    # Se eliminan las filas duplicadas que resultan de la eliminación de enlaces a 
+                    # celdas inexistentes
+                    df.drop_duplicates(subset=['code'], inplace=True, keep=False)
+                    # Se identifican los errors origens
+                    mask = df.fml.str.contains(err_code)
+                    if mask.any():
+                        err_cells, err_codes = zip(*df.loc[mask].code.items())
+                        err_cells = list(err_cells)
+                        df.loc[err_cells, 'value'] = XlErrors.REF_ERROR
+                        error_origens = set(err_codes)
+                        df.loc[err_cell, ['code', 'fml','dependents', 'res_order', 'ftype', 'value']] = [err_code, '', error_origens, 0, '#', XlErrors.REF_ERROR]
                 # Se eliminan en el campo dependents las referencias a los códigos a ser eliminados
-                if (mask := df.dependents.apply(lambda x: bool((x if isinstance(x, set) else set()) & set(old_codes)))).any():
-                    df.loc[mask, 'dependents'] = df.loc[mask].dependents.apply(lambda x: set(x) - set(old_codes))
-
+                old_codes = set(changes.keys())
+                if (mask := df.dependents.apply(lambda x: bool(x & old_codes))).any():
+                    df.loc[mask, 'dependents'] = df.loc[mask].dependents.apply(lambda x: x - old_codes)
+            else:
+                # Modificación de dependdents
+                mask = df.dependents.apply(lambda x: bool(x & changes.keys()))
+                if mask.any():
+                    fnc = lambda x: set(changes.get(y, y) for y in x)
+                    df.loc[mask, 'dependents'] = df.loc[mask].dependents.apply(fnc)
         else:  # field == 'cell'
             mask = df.code.isin(changes.keys())
             keys = df.loc[mask, 'code'].apply(changes.get)
             df.rename(index=keys, inplace=True)
-        pass
+        return df
 
     def set_values(self, values: dict[str, Any], field: Literal['value', 'parameter']='value', recalc:bool=False):
         assert (df := self.data) is not None, 'Table not initialized'
@@ -1494,6 +1577,11 @@ class ExcelTable(ExcelObject):
                 value = XlErrors.VALUE_ERROR
             except NameError as e:
                 value = XlErrors.NAME_ERROR
+            except ValueError as e:
+                if 'could not be broadcast' in str(e):
+                    value = XlErrors.NULL_ERROR
+                else:
+                    value = XlErrors.NUM_ERROR
             except Exception as e:
                 value = XlErrors.UNKNOWN_ERROR
 
@@ -1505,7 +1593,7 @@ class ExcelTable(ExcelObject):
                 case _:
                     pass
             answer.append(value)
-        return answer
+        return answer[0] if pythonize and len(formulas) == 1 else answer
 
     def recalculate(tbl, recalc:bool=False):
         if recalc:
@@ -1734,11 +1822,13 @@ class ExcelTable(ExcelObject):
             return fmls.iloc[0]
         return self.excel_table(fmls)
     
-    def offset_rng(self, cells: str | list[str], col_offset: int = 0, row_offset: int = 0, disc_cell: str | None = None) -> str | dict[str, str]:
+    @staticmethod
+    def offset_rng(cells: str | list[str], col_offset: int = 0, row_offset: int = 0, 
+                   disc_cell: str | None = None, tbl: Optional['ExcelTable'] = None) -> str | dict[str, str]:
             if bflag := isinstance(cells, str):
                 cells = [cells]
 
-            disc_sht = [None, self.parent.title]
+            disc_sht = [None, tbl.parent.title] if tbl else [None,]
             predicate = lambda x: True
             # Cuando se eliminen celdas, se debe asegurar que el offset no sobrepase los límites de la tabla
             rmin, cmin = 1, ord('A')
@@ -1883,10 +1973,11 @@ class ExcelTable(ExcelObject):
         return bflag
 
     def minimun_table(self):
-        excel_slice = self.cells_in_data_rng(self.data.index.tolist())
+        # excel_slice = self.cells_in_data_rng(self.data.index.tolist())
         # mask = (self.data.index.isin(cell_rgn)) & (self.data.value != 0)
         # excel_slice = self.data.loc[mask, :].index.tolist()
-        df = self[excel_slice].fillna(EMPTY_CELL)
+        excel_slice = self.data_rng
+        df = self[excel_slice]
         return df
 
     def _repr_html_(self):
