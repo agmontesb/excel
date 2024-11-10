@@ -11,7 +11,7 @@ import functools
 
 from excel_workbook import (
     TABLE_DATA_MAP, ExcelWorkbook, ExcelTable, XlErrors, 
-    cell_address, cell_pattern, 
+    cell_address, cell_pattern, pythonize_fml, 
     tbl_address, rgn_pattern,
     CIRCULAR_REF, link_pattern
     )
@@ -46,14 +46,14 @@ class TestBaseWorkbook:
         assert sheet.parent is base_workbook
         assert sheet.id == 'sheet'
 
-        table_names = ['sht1_tbl2', 'sht1_tbl2']
+        table_names = ['sht1_tbl1', 'sht1_tbl2']
         assert sheet.tablenames == table_names
-        assert sheet.tables == [sheet[sheet_name] for sheet_name in table_names]
+        assert sheet.tables == [sheet[tbl_name] for tbl_name in table_names]
 
         assert all(sheet.index(sheet.tables[k]) == k for k in range(len(sheet.tables)))
 
-        sheet_ids = [sheet.id for sheet in sheet.tables]
-        assert all(sheet[f'#{id}'].title == table_name for id, table_name in zip(sheet_ids, table_names))
+        tbl_ids = [tbl.id for tbl in sheet.tables]
+        assert all(sheet[f'#{id}'].title == table_name for id, table_name in zip(tbl_ids, table_names))
 
     def test_base_table(self, base_workbook):
         table = base_workbook['No links, No parameters']['sht1_tbl1']
@@ -61,7 +61,7 @@ class TestBaseWorkbook:
         assert table.parent is base_workbook['No links, No parameters']
         assert table.id == 'A'
 
-        assert table.data_rng == 'G4:I9'
+        assert table.data_rng == 'F3:I9'
         assert table.needUpdate is False
         assert table.changed == []
 
@@ -77,10 +77,11 @@ class TestBaseWorkbook:
         assert sorted(tbl.title for tbl in associated_tables) == ['sht2_tbl2', 'sht3_tbl1']
 
         param_code = ws.parameter_code('G2')
+        fnc = lambda tbl, pc: tbl.get_cells_to_calc([pc])
         dependents = [
-            tbl.encoder('decode', tbl.get_cells_to_calc([param_code]), df=tbl.data)
+            tbl.encoder('decode', fnc(tbl, param_code), df=tbl.data)
             for tbl in associated_tables
-            ]
+        ]
         old_values = [
             tbl.data.loc[dependent, 'value'].tolist() for 
             tbl, dependent in zip(associated_tables, dependents)
@@ -112,6 +113,13 @@ class TestBaseWorkbook:
 
 
 class TestHelperMethods:
+
+    @pytest.mark.parametrize("fml, answer", [
+        ('=SUM(A1:A10) + #REF!', "=np.sum(tbl['A1:A10'].values, axis=None)+XlErrors.REF_ERROR"),
+    ])
+    def test_pythonize_fml(self, base_workbook, fml, answer):
+        py_fml = pythonize_fml(fml, table_name='tbl', axis=None)
+        assert py_fml == answer
 
     @pytest.mark.parametrize("cells, row_offset, col_offset, disc_cell, answer, msg", [
         ('A1', 1, 0, None, 'A2', 'Offset row'),

@@ -83,7 +83,7 @@ class XlErrors(Inmutable, Enum):
     NAME_ERROR = "#NAME?"
     NUM_ERROR = "#NUM!"
     NULL_ERROR = "#NULL!"
-    GETTING_DATA_ERROR = "#GETTING_DATA"
+    GETTING_DATA_ERROR = "#GETTING_DATA!"
     SPILL_ERROR = "#SPILL!"
     UNKNOWN_ERROR = "#UNKNOWN!"
     # Add more Excel error types here as needed
@@ -163,6 +163,7 @@ token_specification = [
     ('OPENP', r'\('),  # Line endings
     ('CLOSEP', r'\)'),  # Line endings
     ('SHEET', r"'[^']+'!"),  # Sheet names
+    ('ERROR', r'#[A-Z/0]+[!?]'), # Error values
     ('CELL', r'\$?[A-Z]\$?[1-9][0-9]*'),  # Identifiers
     ('FUNCTION', r'[A-Z]+'),  # Skip over spaces and tabs
     ('SKIP', r'[ %]+'),  # Skip over spaces and tabs
@@ -173,6 +174,7 @@ tokenizer = re.compile('|'.join('(?P<%s>%s)' % pair for pair in token_specificat
 link_pattern = re.compile(r"((?:'(?:.+?)'!)+(?:\$?[A-Z])+(?:\$?[0-9])+)")
 cell_pattern = re.compile(r"(?:'(?P<sht>.+?)'!)*(?P<col>\$?[A-Z]+)(?P<row>\$?[0-9]+)")
 cell_address:Callable[[str], tuple[str, ...]] = lambda cell: tuple(x for x in cell_pattern.search(cell).groups()[::-1] if x)
+rgn_pattern_grp = re.compile("(?:'(?P<sht>.+?)'!)*(?P<col>\\$?[A-Z]+)(?P<row>\\$?[0-9]+)(?::\\$?[A-Z]\\$?[0-9]+)?")
 rgn_pattern = re.compile(r"(?:'.+?'!)*\$?[A-Z]\$?[0-9]+(?::\$?[A-Z]\$?[0-9]+)?")
 tbl_pattern = re.compile(r"(?:'(?P<sht>.+?)'!)*(?P<cell>.+)")
 tbl_address = lambda tbl: tbl_pattern.match(tbl).groups()
@@ -242,6 +244,12 @@ def pythonize_fml(fml: str, table_name: str, axis: None|Literal[0,1]=None, mask=
                 lst_id += token_chr
             case 'SHEET':
                 lst_id = token_chr
+            case 'ERROR':
+                err_value = XlErrors(token_chr)
+                err_str = f'XlErrors.{err_value.name}'
+                py_term = err_str
+                pyfml += py_term
+                lst_id = ''
             case 'CELL':
                 prefix = token_chr.rstrip('0123456789')
                 suffix = token_chr[len(prefix):]
@@ -287,6 +295,31 @@ def coords_from_range(rng):
     min_col, min_row = ord(rng_inf[0]) - ord('A') + 1, int(rng_inf[1:])
     max_col, max_row = (ord(rng_sup[0]) - ord('A') + 1) + 1, int(rng_sup[1:]) + 1
     return dict(min_col=min_col, min_row=min_row, max_col=max_col, max_row=max_row)
+
+
+def shrink_range(linf, lsup, changes):
+    del_what = 'row' if changes[0].isnumeric() else 'col'
+    bflag = del_what == 'col'
+    k1, k2, fnc, gnc = (2, 3, ord, chr) if bflag else (3, 2, int, str)
+    ucol = cell_pattern.match(lsup).group(k1)
+    # lx_row = cell_pattern.match(changes[0]).group(k2)
+    row_changes = [
+        x for x in changes 
+        if x <= ucol
+    ]
+    if not row_changes:
+        return linf, lsup
+    min_col = fnc(row_changes[0]) if linf in changes else (fnc(row_changes[0]) - 1)
+    n = len(row_changes)
+    answ = [linf]
+    for x in (linf, lsup)[1 - int(linf in changes):]:
+        tpl = list(cell_pattern.match(x).groups())
+        tpl[2 - int(bflag)] = gnc(max(min_col, (fnc(tpl[2 - int(bflag)]) - n)))
+        sht, col, row = tpl
+        x = f"'{sht}'!{col}{row}" if sht else f"{col}{row}"
+        answ.append(x)
+
+    return answ[-2:]
 
 
 class ExcelObject(ABC):
@@ -532,29 +565,6 @@ class ExcelWorksheet(ExcelCollection):
         rng_codes = None
         for tbl, codes in propagate_error.items():
             cells = [ExcelTable.encoder('decode', x, df=tbl.data) for x in codes]
-            # if xl_error is XlErrors.REF_ERROR:
-            #     rng_codes = rng_codes or [f"'{tbl.parent.id}'!{x}" for x in codes for tbl, codes in to_process.items()]
-            #     pattern = rgn_pattern
-            #     mask = tbl.data.loc[cells].fml.str.len() > 0
-            #     fmls = tbl.data.loc[mask].fml
-            #     for old_code in codes:
-            #         def replacement(m):
-            #             pattern = r"(?:'({0})'!)*(\$?{1})(\$?{2})".format(*cell_pattern.match(old_code).groups())
-            #             if ':' in m[0]:
-            #                 if all(x in rng_codes for x in m[0].split(':')):
-            #                     return code
-            #                 return re.sub(pattern, lambda m: pass_anchors(m[0], rng_codes[old_code]), m[0])
-            #             elif re.match(pattern, m[0]):
-            #                 return code
-            #             else:
-            #                 return m[0]
-
-            #         fmls = fmls.str.replace(
-            #             pattern,
-            #             replacement,
-            #             regex=True
-            #         )
-            #     reg_value = tbl.data.loc[cells].value # SOLO MieNTRAS SE desarrolla
             tbl.data.loc[cells, 'value'] = reg_value
 
     def insert(self, cell_slice, from_delete=False):
@@ -606,6 +616,103 @@ class ExcelWorksheet(ExcelCollection):
             ws.broadcast_changes(to_broadcast, field='cell')
         self._data_rgn = None
 
+    def process_codes_to_delete(ws, to_process: dict['ExcelTable', set[str]], offset_kwargs):
+        for tbl, codes in to_process.items():
+            df = tbl.data
+            cells, codes = zip(*list(df.loc[df.code.isin(codes)].code.items()))
+            err_ref_cell, err_ref_code = next(zip(*ws.register_links(tbl, [f"'{ws.title}'!{XlErrors.REF_ERROR.code}"], default_value=XlErrors.REF_ERROR)))[:2]
+
+            # ***********************          
+            direct_desc = flatten_sets(df.loc[list(cells)].dependents) - set(codes)
+            mask = df.code.isin(direct_desc)
+            fmls_df = df.loc[mask, ['fml', 'code']]
+            code_ndx = dict(zip(df.code, df.index))
+
+            # transformación fml a dominio cell
+
+            fmls_df = tbl.set_field(code_ndx, field='code', data=fmls_df, with_dependents=False)
+            # changes = fmls_df.index.tolist()
+            k_case = 1 if 'col_offset' in offset_kwargs else 2
+            case_lst = lambda lst, kcase: [
+                tpl[kcase] for x in lst 
+                if (tpl := cell_pattern.match(x).groups())
+            ]
+            changes = list(collections.Counter(case_lst(cells, k_case)).keys())
+            err_ref = err_ref_cell
+            pairs = []
+            def replacement(m):
+                if m[1]:
+                    # En el dominio cell, cuando se tiene sht in cell, esa cell no 
+                    # está en la tabla a procesar
+                    return m[0]
+                if ':' in m[0]:
+                    m = tbl_pattern.match(m[0])
+                    prefix = f"'{m[1]}'!" if m[1] else ''
+                    linf, lsup = map(lambda x: f"{prefix}{x}", m[0].replace('$', '').split(':'))
+                    if all(x in changes for x in case_lst((linf, lsup), k_case)):
+                        return err_ref
+                    left, right = shrink_range(linf, lsup, changes)
+                    [pairs.append(tpl) for tpl in zip((linf, lsup), (left, right)) if tpl[0] != tpl[1]]
+
+                    # Se deja para ser procesados posteriormente.
+                    return m[0]
+                key = case_lst((m[0].replace('$', ''), ), k_case)[0]
+                return err_ref if key in changes else m[0]
+
+            fmls_df.loc[:, 'fml'] = fmls_df.fml.str.replace(
+                rgn_pattern_grp,
+                replacement,
+                regex=True
+            )
+            if pairs:
+                pairs = set(pairs)
+                map_pairs = dict(tpl  if tpl[0] in cells else tpl[::-1] for tpl in pairs)
+                fmls_df.loc[:, 'fml'] = fmls_df.fml.str.replace(
+                    cell_pattern,
+                    lambda m: pass_anchors(m[0], map_pairs.get(m[0].replace('$', ''), m[0])),
+                    regex=True
+                )
+
+            # transformación fml a dominio code
+            code_ndx = df.code.to_dict()
+            code_ndx[err_ref_cell] = err_ref_code
+            fmls_df = tbl.set_field(code_ndx, field='code', data=fmls_df, with_dependents=False)
+
+            # Integramos la fórmulas modificadas al df
+            df.loc[fmls_df.index, fmls_df.columns] = fmls_df
+
+            # Modificación de códigos
+            df.loc[list(cells), 'code'] = err_ref_code
+            
+            # ***********************
+            # Aseguramos que el código de error esta registrado en la tabla.
+            # Si no existe, se crea un registro para el error y si existe no hace nada
+            tws = tbl.parent
+            cell_link = tws.parent[f'#{tbl_address(err_ref_code)[0]}'].title
+            cell_link = f"'{cell_link}'!{XlErrors.REF_ERROR.code}"
+            tws.register_code(tbl, cell_link, [], default_value=XlErrors.REF_ERROR)
+            if df.code.tolist().count(err_ref_code) > 1:
+                err_code = err_ref_code
+                err_cell = cell_link.replace(f"'{ws.title}'!", '')
+                # Se eliminan las filas duplicadas que resultan de la eliminación de enlaces a 
+                # celdas inexistentes
+                df.drop_duplicates(subset=['code'], inplace=True, keep=False)
+                # Se identifican los errors origens
+                mask = df.fml.str.contains(err_code)
+                if mask.any():
+                    err_cells, err_codes = zip(*df.loc[mask].code.items())
+                    err_cells = list(err_cells)
+                    df.loc[err_cells, 'value'] = XlErrors.REF_ERROR
+                    error_origens = set(err_codes)
+                    df.loc[err_cell, ['code', 'fml','dependents', 'res_order', 'ftype', 'value']] = [err_code, '', error_origens, 0, '#', XlErrors.REF_ERROR]
+                # Se eliminan en el campo dependents las referencias a los códigos a ser eliminados
+                old_codes = set(codes)
+                if (mask := df.dependents.apply(lambda x: bool(x & old_codes))).any():
+                    df.loc[mask, 'dependents'] = df.loc[mask].dependents.apply(lambda x: x - old_codes)
+                tbl.data = df
+            changes = {f"'{ws.id}'!{code}": err_code for code in codes}
+            ws.broadcast_changes(changes, field='code')
+
     def delete(self, cell_slice):
         excel_slice = f'{cell_slice}:{cell_slice}'.split(':', 2)[:2]
         slice_type = cell_slice.replace(':', '')
@@ -646,17 +753,7 @@ class ExcelWorksheet(ExcelCollection):
         all_dependents = self.all_dependents(to_process=to_process.copy())
         [all_dependents[tbl].difference_update(to_process[tbl]) for tbl in to_process]
 
-        for tbl, codes in to_process.items():
-            tbl: ExcelTable
-            df = tbl.data
-            cells, codes = zip(*list(df.loc[df.code.isin(codes)].code.items()))
-            off_cells = tbl.offset_rng(cells, **kwargs, tbl=tbl).values()
-            off_codes = df.loc[off_cells].code.tolist()
-            rgn_codes = dict(zip(codes, off_codes))
-            _, err_code, _ = next(zip(*self.register_links(tbl, [f"'{ws.title}'!{XlErrors.REF_ERROR.code}"], default_value=XlErrors.REF_ERROR)))
-            tbl.data = tbl.set_field(rgn_codes, field='code', err_ref_code=err_code)
-            changes = {f"'{ws.id}'!{code}": err_code for code in codes}
-            self.broadcast_changes(changes, field='code')
+        self.process_codes_to_delete(to_process, kwargs)
 
         self.insert(cell_slice, from_delete=True)
         self.propagate_error(XlErrors.REF_ERROR)
@@ -671,17 +768,6 @@ class ExcelWorksheet(ExcelCollection):
                 tbl.changed.extend(changed)
                 tbl.recalculate(recalc=True)
 
-        # for tbl in self.tables:
-        #     if not (cells := tbl.cells_in_data_rng(all_cells)):
-        #         continue
-        #     cells = list(set(cells) & set(tbl.data.index))
-        #     df = tbl.data.loc[cells]
-        #     codes = df.loc[df.value.isin(list(XlErrors))].code.tolist()
-        #     all_dependents = flatten_sets(df.dependents.tolist()) | set(df.code)
-        #     changed = all_dependents - set(codes)
-        #     if changed:
-        #         tbl.changed.extend(changed)
-        #         tbl.recalculate(recalc=True)
         pass
 
 
@@ -852,10 +938,10 @@ class ExcelWorksheet(ExcelCollection):
                         tbl.set_values(mapper, field=field, recalc=True)
                     case 'cell':  # field == 'cell'
                         mapper = {cell: changes[cell].replace(f"'{ws.title}'!", '') for cell in cells}
-                        tbl.data = tbl.set_field(mapper, field='cell')
+                        tbl.data = tbl.set_field(mapper, field='cell', data=tbl.data)
                     case 'code':  # field == 'code'
                         mapper = {cell: changes[cell] for cell in cells}
-                        tbl.data = tbl.set_field(mapper, field='code')
+                        tbl.data = tbl.set_field(mapper, field='code', data=tbl.data)
                     case _:
                         pass
         pass
@@ -1111,12 +1197,12 @@ class ExcelTable(ExcelObject):
 
         # Enlaces externos sin dependents
         lnks = tbl.links()
-        if (mask := df.loc[lnks].dependents.isna()).any():
+        if (mask := df.loc[lnks].dependents.astype(str).str.startswith('set()')).any():
             for cell, code in df.loc[lnks].code[mask].to_dict().items():
                 df.drop(index=cell, inplace=True)
                 tbl.parent.reset_link(tbl, code)
 
-        tbl.changed = list(set(tbl.changed) & set(df.code))
+        tbl.changed = list(set(tbl.changed) - set(df.loc[lnks].code[mask]))
 
 
     def clear_cells(tbl, to_clear: list[str], data=None):
@@ -1223,7 +1309,7 @@ class ExcelTable(ExcelObject):
             # Asignación de code para los enlaces (links)
             old_codes = df.loc[links, 'code'].tolist()
             changes = dict(zip(old_codes, code_links))
-            self.data = df =self.set_field(changes, field='code')
+            self.data = df =self.set_field(changes, field='code', data=self.data)
             # Asignación de valores para los enlaces (links)
             df.loc[links, 'value'] = link_values
             self.changed.extend(code_links)
@@ -1250,72 +1336,44 @@ class ExcelTable(ExcelObject):
         ndx = self.parent.index(self)
         self.parent._objects.pop(ndx)
 
-    def set_field(self, changes: dict[str, Any], *, field: Literal['code', 'cell']= 'code', err_ref_code: str | None = None, data=None):
-        df = data if isinstance(data, pd.DataFrame) else self.data
-        ws = self.parent
+    @staticmethod
+    def set_field(changes: dict[str, Any], *, field: Literal['code', 'cell']= 'code', with_dependents: bool = True, data=None):
+        assert isinstance(data, pd.DataFrame)
+        df = data
         if field == 'code':
             if not (gmask := df.code.isin(list(changes.keys()))).any():
                 return df
-            direct_desc = flatten_sets(df.loc[gmask].dependents) - changes.keys()
+            direct_desc = set(df.loc[gmask].code)
+            if with_dependents:
+                direct_desc |= flatten_sets(df.loc[gmask].dependents)
             mask = df.code.isin(direct_desc)
-            pattern = rgn_pattern
             def replacement(m):
                 if ':' in m[0]:
                     m = tbl_pattern.match(m[0])
-                    linf, lsup = m[0].replace('$', '').split(':')
-                    if m[1]:
-                        linf, lsup = map(lambda x: f"'{m[1]}'!{x}", (linf, lsup))
-                    if all(x in changes for x in (linf, lsup)):
-                        return err_ref_code
+                    prefix = f"'{m[1]}'!" if m[1] else ''
+                    linf, lsup = map(lambda x: f"{prefix}{x}", m[0].replace('$', '').split(':'))
                     linf = changes.get(linf, linf)
                     lsup = changes.get(lsup, lsup)
-                    if m[1]:
-                        lsup = lsup.split('!')[1]
+                    lsup = lsup.split('!')[-1]
                     linf, lsup = map(lambda tpl: pass_anchors(*tpl), zip(m[0].split(':'), (linf, lsup)))
                     sub_str = ':'.join([linf, lsup])
                     return sub_str
                 key = m[0].replace('$', '')
-                return (err_ref_code or pass_anchors(m[0], changes[key])) if key in changes else m[0]
+                return pass_anchors(m[0], changes[key]) if key in changes else m[0]
 
+ 
             df.loc[mask, 'fml'] = df[mask].fml.str.replace(
-                pattern,
+                rgn_pattern_grp,
                 replacement,
                 regex=True
             )            
             # Modificación de códigos
-            df.loc[gmask, 'code'] = err_ref_code or [changes[key] for key in df.loc[gmask].code]
+            df.loc[gmask, 'code'] = [changes[key] for key in df.loc[gmask].code]
 
-            if err_ref_code:
-                # Aseguramos que el código de error esta registrado en la tabla.
-                # Si no existe, se crea un registro para el error y si existe no hace nada
-                ws = self.parent
-                cell_link = ws.parent[f'#{tbl_address(err_ref_code)[0]}'].title
-                cell_link = f"'{cell_link}'!{XlErrors.REF_ERROR.code}"
-                ws.register_code(self, cell_link, [], default_value=XlErrors.REF_ERROR)
-                if df.code.tolist().count(err_ref_code) > 1:
-                    err_code = err_ref_code
-                    err_cell = cell_link.replace(f"'{ws.title}'!", '')
-                    # Se eliminan las filas duplicadas que resultan de la eliminación de enlaces a 
-                    # celdas inexistentes
-                    df.drop_duplicates(subset=['code'], inplace=True, keep=False)
-                    # Se identifican los errors origens
-                    mask = df.fml.str.contains(err_code)
-                    if mask.any():
-                        err_cells, err_codes = zip(*df.loc[mask].code.items())
-                        err_cells = list(err_cells)
-                        df.loc[err_cells, 'value'] = XlErrors.REF_ERROR
-                        error_origens = set(err_codes)
-                        df.loc[err_cell, ['code', 'fml','dependents', 'res_order', 'ftype', 'value']] = [err_code, '', error_origens, 0, '#', XlErrors.REF_ERROR]
-                # Se eliminan en el campo dependents las referencias a los códigos a ser eliminados
-                old_codes = set(changes.keys())
-                if (mask := df.dependents.apply(lambda x: bool(x & old_codes))).any():
-                    df.loc[mask, 'dependents'] = df.loc[mask].dependents.apply(lambda x: x - old_codes)
-            else:
+            if with_dependents and (mask := df.dependents.apply(lambda x: bool(x & changes.keys()))).any():
                 # Modificación de dependdents
-                mask = df.dependents.apply(lambda x: bool(x & changes.keys()))
-                if mask.any():
-                    fnc = lambda x: set(changes.get(y, y) for y in x)
-                    df.loc[mask, 'dependents'] = df.loc[mask].dependents.apply(fnc)
+                fnc = lambda x: set(changes.get(y, y) for y in x)
+                df.loc[mask, 'dependents'] = df.loc[mask].dependents.apply(fnc)
         else:  # field == 'cell'
             mask = df.code.isin(changes.keys())
             keys = df.loc[mask, 'code'].apply(changes.get)
@@ -1375,7 +1433,9 @@ class ExcelTable(ExcelObject):
     def get_cells_to_calc(tbl, changed, data=None):
         ws = tbl.parent
         to_process = set()
-        changed = [code.replace(f"'{ws.id}'!", '') for code in changed]
+        params = set(changed) & set(ws.parameter_code(x) for x in ws.parameters())
+        changed = [code.replace(f"'{ws.id}'!", '') for code in set(changed) - params]
+        changed.extend(params)
         changed_cells, f_changed = tbl.cells_to_calc(changed, data=data), None
         while True:
             try:
