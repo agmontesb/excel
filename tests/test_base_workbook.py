@@ -19,6 +19,45 @@ from utilities import TableComparator, tbl_data
 from fixtures import static_workbook as base_workbook
 
 
+class TestKnownIssues:
+
+    @pytest.mark.xfail(
+        reason="Referenciar en una fórmula un enlace a una celda vacía en otra tabla del workbook."
+    )
+    def test_issue_1(self, base_workbook):
+        ws = base_workbook['Parameters and inner links']
+        tbl1 = ws['sht2_tbl2']
+        try:
+            tbl1.set_records({'F12': '=F3'}, field='fml')
+        except KeyError as e:
+            pytest.fail(f"Expected exception {e}")
+
+        try:
+            tbl1.set_records({'F12': '=SUM(F3:H3)'}, field='fml')
+        except KeyError as e:
+            pytest.fail(f"Expected exception {e}")
+
+        try:
+            tbl1.set_records({'F12': "=SUM('Parameters and inner links'!F3:H3)"}, field='fml')
+        except KeyError as e:
+            pytest.fail(f"Expected KeyError {e}")
+
+    @pytest.mark.xfail(
+        reason=''.join([
+            "En una fórmula que hace referencia a un rango externo a la tabla en que se trabajando, ",
+            "no se actualiza el valor cuando una de las celdas del rango referenciado cambia"
+        ])
+    )
+    def test_issue_2(self, base_workbook):
+        ws = base_workbook['Parameters and inner links']
+        tbl1 = ws['sht2_tbl2']
+        tbl1.set_records({'F12': '=SUM(F3:H3)'}, field='fml')
+        tbl2 = ws['sht2_tbl1']
+        tbl2.set_records({'F3': 10, 'G3': 20, 'H3': 30}, field='value')
+        tbl1.recalculate(recalc=True)
+        assert tbl1['F12'] == 60
+
+
 class TestBaseWorkbook:
 
     def test_base_workbook(self, base_workbook):
