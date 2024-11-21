@@ -1,19 +1,16 @@
 import collections
-import functools
-import operator
 import re
 import warnings
 from abc import ABC, abstractmethod
-from idlelib.configdialog import changes
-
 import pandas as pd
 import numpy as np
 from typing import Literal, Optional, Any, Dict, List, TypedDict, Sequence, Iterable
 import itertools
 from typing import Protocol, Type
-
 from collections.abc import Callable
 from enum import Enum, Flag
+
+import xlfunctions as xlf
 
 TABLE_DATA_MAP = {
     'fml': str, 'dependents': object, 'res_order': int, 
@@ -155,6 +152,7 @@ CIRCULAR_REF = CircularRef()
 
 token_specification = [
     ('NUMBER', r'\d+(\.\d*)?'),  # Integer or decimal number
+    ('STRING', r'".+?"'),  # string
     ('ASSIGN', r'\='),  # Assignment operator
     ('SOP', r'^|&|<>'),  # Special operators
     ('OP', r'[+\-*/]'),  # Arithmetic operators
@@ -162,6 +160,7 @@ token_specification = [
     ('ANCHOR', r'\:'),  # Line endings
     ('OPENP', r'\('),  # Line endings
     ('CLOSEP', r'\)'),  # Line endings
+    ('BOOL', r'TRUE|FALSE'),  # Line endings
     ('SHEET', r"'[^']+'!"),  # Sheet names
     ('ERROR', r'#[A-Z/0]+[!?]'), # Error values
     ('CELL', r'\$?[A-Z]\$?[1-9][0-9]*'),  # Identifiers
@@ -223,9 +222,9 @@ def pythonize_fml(fml: str, table_name: str, axis: None|Literal[0,1]=None, mask=
         # print(f'{kind=}: {token_chr=}')
         match kind:
             case 'FUNCTION':
-                fnc_name = token_chr if token_chr != 'IF' else 'WHERE'
+                fnc_name = token_chr if token_chr != 'IF' else 'IF_'
                 fnc_stack.append(fnc_name)
-                pyfml += f'np.{fnc_name.lower()}'
+                pyfml += f'xlf.{fnc_name.lower()}'
             case 'ASSIGN':
                 if pyfml.count('=') > 0 and pyfml[-1] not in '<>':
                     pyfml += '='
@@ -237,11 +236,14 @@ def pythonize_fml(fml: str, table_name: str, axis: None|Literal[0,1]=None, mask=
                 fnc_stack.pop()
                 if fnc_stack and fnc_stack[-1] != '(':
                     fnc_name = fnc_stack.pop()
-                    pyfml += f', axis={axis})' if fnc_name == 'SUM' else ')'
+                    # pyfml += f', axis={axis})' if fnc_name == 'SUM' else ')'
+                    pyfml += ')'
                 else:
                     pyfml += ')'
             case 'ANCHOR':
                 lst_id += token_chr
+            case 'BOOL':
+                pyfml += token_chr.capitalize()
             case 'SHEET':
                 lst_id = token_chr
             case 'ERROR':
@@ -1873,14 +1875,18 @@ class ExcelTable(ExcelObject):
             out_fmls = out_fmls.tolist()
         return out_fmls.iloc[0] if b_str else out_fmls
 
-    def get_formula(self, *excel_slice: tuple[str, ...]):
+    def get_formula(self, *excel_slice: tuple[str, ...] | None):
+        excel_slice = excel_slice or self.data_rng
         cell_rgn = self._cell_rgn(excel_slice)
-        mask = self.data.index.isin(cell_rgn) & ~self.data.fml.isna()
+        mask = self.data.index.isin(cell_rgn) & (self.data.fml.str.len() > 0)
         coded_fmls = self.data.loc[mask, 'fml']
         fmls = self.encoder('decode', coded_fmls, df=self.data)
+        mask = self.data.index.isin(cell_rgn) & (self.data.ftype == '#')
+        vals = self.data.loc[mask].value
+        answ = pd.concat([fmls, vals])
         if len(cell_rgn) == 1:
-            return fmls.iloc[0]
-        return self.excel_table(fmls)
+            return answ.iloc[0]
+        return self.excel_table(answ)
     
     @staticmethod
     def offset_rng(cells: str | list[str], col_offset: int = 0, row_offset: int = 0, 
