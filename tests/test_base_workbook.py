@@ -6,8 +6,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pytest
 import openpyxl as px
 import pandas as pd
-import itertools
-import functools
 
 from excel_workbook import (
     TABLE_DATA_MAP, ExcelWorkbook, ExcelTable, XlErrors, 
@@ -17,6 +15,69 @@ from excel_workbook import (
     )
 from utilities import TableComparator, tbl_data
 from fixtures import static_workbook as base_workbook
+import xlfunctions as xlf
+
+class TestXlFunctions:
+
+    xlFmlStr = lambda tpl: f'={tpl[0].replace("_", "").upper()}({", ".join(map(lambda x: f"{chr(34)}{x}{chr(34)}" if isinstance(x, str) else str(x).upper(), tpl[1]))})'
+
+    @pytest.mark.parametrize("func_name, data, answer", map(lambda x: pytest.param(*x, id=TestXlFunctions.xlFmlStr(x)), [
+        ('trim', [" Esto     es un     texto     "], "Esto es un texto"),
+        ('right', ['Stock Number'], 'r'),
+        ('right', ['Sale Price', 5], 'Price'),
+        ('replace', ['abcdefghijk', 6, 5, '*'], 'abcde*k'),
+        ('proper', ['25eNg'], '25Eng'),
+        ('numbervalue', ['1_234,56%', ',', '_'], 12.3456),
+        ('numbervalue', ['1_2a34,5_6', ',', '_'], XlErrors.VALUE_ERROR),
+        ('numbervalue', ['1_2,34,5_6', ',', '_'], XlErrors.VALUE_ERROR),
+        ('numbervalue', ['1_23_4,5_6', ',', '_'], XlErrors.VALUE_ERROR),
+        ('numbervalue', ['1_23_4,56', ',', '_'], 1234.56),
+        ('numbervalue', ['1_234,56', ',', '_'], 1234.56),
+        ('mid', ['Fluid Flow', 20, 5], ''),
+        ('mid', ['Fluid Flow', 7, 20], 'Flow'),
+        ('mid', ['Fluid Flow', 1, 5], 'Fluid'),
+        ('lower', ['Apt. 2B'], 'apt. 2b'),
+        ('lower', ['E. E. Cummings'], 'e. e. cummings'),
+        ('len', ['aBc'], 3),
+        ('left', ['Sale Price', 1], 'S'),
+        ('left', ['Sale Price', 4], 'Sale'),
+        ('fixed', [1234.567, 1], '1.234,6'),
+        ('fixed', [1234.567, -1], '1.230'),
+        ('fixed', [-1234.567, -1, True], '-1230'),
+        ('fixed', [44.332], '44,33'),
+        ('find', ['M', 'Miriam McGovern'], 1),
+        ('find', ['m', 'Miriam McGovern'], 6),
+        ('find', ['M', 'Miriam McGovern', 3], 8),
+        ('dollar', [1234.567, 2], '$1.234,57'),
+        ('dollar', [-1234.567, -2], '($1.200)'),
+        ('dollar', [-0.123, 4], '($0,1230)'),
+        ('dollar', [1.5], '$1,50'),
+        ('concat', ['a', 'b', 'c'], 'abc'),
+        ('sum', [1, 4, 5], 10),
+        ('if_', [True, 100, -100], 100),
+        ('if_', [False, 100, -100], -100),
+        ('upper', ['aBc'], 'ABC'),
+        ('char', [65, 66, 67], chr(65)),
+        ('code', ['abc'], ord('a')),
+        ('clean', ['abc'], 'abc'),
+    ]))
+    def test_text_functions(self, func_name, data, answer, base_workbook):
+        fnc = getattr(xlf, func_name)
+        assert fnc(*data) == answer
+
+        tbl = base_workbook['No links, No parameters']['sht1_tbl2']
+        fml = TestXlFunctions.xlFmlStr((func_name, data, answer))
+        assert tbl.evaluate(fml) == answer
+
+        cells = ['F12', 'G12', 'H12']
+        ncells = min(len(data), 3)
+        tbl.set_records(dict(zip(cells, data)), field='value')
+        data = [*cells[:ncells], *data[ncells:]]
+        fml = TestXlFunctions.xlFmlStr((func_name, data, answer))
+        for cell in cells[:ncells]:
+            fml = fml.replace(f'"{cell}"', cell)
+        assert tbl.evaluate(fml) == answer
+
 
 
 class TestBaseWorkbook:
