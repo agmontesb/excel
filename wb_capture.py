@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 import time
 import threading
+import locale
 from tkinter import filedialog
 
 class App(tk.Tk):
@@ -181,6 +182,10 @@ class App(tk.Tk):
                 self.listbox_click(None)
 
     def export_data(self):
+        locale.setlocale(locale.LC_ALL, '')
+        decimal_point, thousands_sep = locale.localeconv()['decimal_point'], locale.localeconv()['thousands_sep']
+        schrs = set([*list('+-1234567890%'), decimal_point, thousands_sep])
+        not_a_number = lambda x: bool(set(x) - schrs)
         file_path = filedialog.asksaveasfilename(
             defaultextension=".txt",
             filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
@@ -188,15 +193,27 @@ class App(tk.Tk):
         if file_path:
             tpl_str = ''
             wb_struct = []
-            with open(file_path, "w") as f:
+            with open(file_path, "wb") as f:
                 for item in self.clipboard_list:
                     if len(item) == 4:  # Check if the tuple has 4 elements
                         wb_struct.append(f'    {item[1:]}')
-                        tpl_str += f'{item[2]} = """{item[0].replace(",", ".")}"""\n\n'
+                        item_str = '\n'.join(
+                            [
+                                '\t'.join(
+                                    [
+                                        cell if not_a_number(cell) else cell.replace(thousands_sep, '_').replace(decimal_point, '.')
+                                        for cell in row.split('\t')
+                                    ]
+                                ) 
+                                for row in item[0].split('\n')
+                            ]
+                        )
+
+                        tpl_str += f'{item[2]} = """{item_str}"""\n\n'
                 wb_struct = ",\n".join(wb_struct)
                 wb_struct = f'\nwb_structure = [\n{wb_struct}\n]\n\n'
-                f.write(wb_struct)
-                f.write(tpl_str)
+                f.write(wb_struct.encode('utf-8'))
+                f.write(tpl_str.encode('utf-8'))
 
     def stop_monitor(self, event=None):
         # Stop the thread when the window gets focus

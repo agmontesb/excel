@@ -1,3 +1,4 @@
+import inspect
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
@@ -6,8 +7,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pytest
 import openpyxl as px
 import pandas as pd
-import itertools
-import functools
 
 from excel_workbook import (
     TABLE_DATA_MAP, ExcelWorkbook, ExcelTable, XlErrors, 
@@ -17,6 +16,113 @@ from excel_workbook import (
     )
 from utilities import TableComparator, tbl_data
 from fixtures import static_workbook as base_workbook
+import xlfunctions as xlf
+
+class TestXlFunctions:
+
+    @staticmethod
+    def xlFmlStr(tpl, with_kwargs=True):
+        fnc = getattr(xlf, tpl[0])
+        sig = inspect.Signature.from_callable(fnc)
+        bsig = sig.bind(*tpl[1])
+        if not with_kwargs or str(sig) == '(*data)':
+            sig_str = ', '.join(
+                f"{chr(34)}{x}{chr(34)}" if isinstance(x, str) else str(x).upper()
+                for x in [*bsig.args, *bsig.kwargs.values()]
+            )
+        else:
+            sig_str = ', '.join(
+                f'{value}' if sig.parameters[key].default == inspect._empty else f'{key}={value}' 
+                for key, x in bsig.arguments.items()
+                if (value := f"{chr(34)}{x}{chr(34)}" if isinstance(x, str) else str(x).upper())
+            )
+        return f"{tpl[0].replace('_', '').upper()}({sig_str})"
+
+    def basic_testing(self, func_name, data, answer, base_workbook):
+        fnc = getattr(xlf, func_name)
+        assert fnc(*data) == answer
+
+        tbl = base_workbook['No links, No parameters']['sht1_tbl2']
+        fml = TestXlFunctions.xlFmlStr((func_name, data, answer), False)
+        assert tbl.evaluate(fml) == answer
+
+        cells = ['F12', 'G12', 'H12']
+        ncells = min(len(data), 3)
+        tbl.set_records(dict(zip(cells, data)), field='value')
+        data = [*cells[:ncells], *data[ncells:]]
+        fml = '=' + TestXlFunctions.xlFmlStr((func_name, data, answer), False)
+        for cell in cells[:ncells]:
+            fml = fml.replace(f'"{cell}"', cell)
+        assert tbl.evaluate(fml) == answer
+
+    @pytest.mark.parametrize("func_name, data, answer", map(lambda x: pytest.param(*x, id=TestXlFunctions.xlFmlStr(x, True)), [
+        ('days360', [xlf.datevalue('29/02/2012'), xlf.datevalue('30/01/2013'), True], 331),
+        ('days360', [xlf.datevalue('29/02/2012'), xlf.datevalue('30/01/2013')], 330),
+        ('days360', [xlf.datevalue('28/02/2012'), xlf.datevalue('30/01/2013'), True], 332),
+        ('days360', [xlf.datevalue('28/02/2012'), xlf.datevalue('30/01/2013')], 332),
+        ('days360', [xlf.datevalue('28/02/2012'), xlf.datevalue('31/01/2013'), True], 332),
+        ('days360', [xlf.datevalue('28/02/2012'), xlf.datevalue('31/01/2013')], 333),
+        ('date', [2008, 1, 2], 39449),
+        ('date', [108, 1, 2], 39449),
+        ('date', [-108, 1, 2], XlErrors.NUM_ERROR),
+        ('date', [2008, 14, 2], 39846),
+        ('date', [2008, -3, 2], 39327),
+        ('date', [2008, 1, 35], 39482),
+        ('date', [2008, 1, -15], 39432),
+        ('datevalue', ["22/8/2011"], 40777),
+        ('datevalue', ["22-May-2011"], 40685),
+        ('datevalue', ["2011/02/23"], 40597),
+        ('datevalue', ["5-JUL"], 45478),
+        ('datevalue', ["1/1/10000"], XlErrors.VALUE_ERROR),
+        ('datevalue', ["31/12/1899"], XlErrors.VALUE_ERROR),
+    ]))
+    def test_date_functions(self, func_name, data, answer, base_workbook):
+        self.basic_testing(func_name, data, answer, base_workbook)
+
+
+    @pytest.mark.parametrize("func_name, data, answer", map(lambda x: pytest.param(*x, id=TestXlFunctions.xlFmlStr(x, True)), [
+        ('trim', [" Esto     es un     texto     "], "Esto es un texto"),
+        ('right', ['Stock Number'], 'r'),
+        ('right', ['Sale Price', 5], 'Price'),
+        ('replace', ['abcdefghijk', 6, 5, '*'], 'abcde*k'),
+        ('proper', ['25eNg'], '25Eng'),
+        ('numbervalue', ['1_234,56%', ',', '_'], 12.3456),
+        ('numbervalue', ['1_2a34,5_6', ',', '_'], XlErrors.VALUE_ERROR),
+        ('numbervalue', ['1_2,34,5_6', ',', '_'], XlErrors.VALUE_ERROR),
+        ('numbervalue', ['1_23_4,5_6', ',', '_'], XlErrors.VALUE_ERROR),
+        ('numbervalue', ['1_23_4,56', ',', '_'], 1234.56),
+        ('numbervalue', ['1_234,56', ',', '_'], 1234.56),
+        ('mid', ['Fluid Flow', 20, 5], ''),
+        ('mid', ['Fluid Flow', 7, 20], 'Flow'),
+        ('mid', ['Fluid Flow', 1, 5], 'Fluid'),
+        ('lower', ['Apt. 2B'], 'apt. 2b'),
+        ('lower', ['E. E. Cummings'], 'e. e. cummings'),
+        ('len', ['aBc'], 3),
+        ('left', ['Sale Price', 1], 'S'),
+        ('left', ['Sale Price', 4], 'Sale'),
+        ('fixed', [1234.567, 1], '1.234,6'),
+        ('fixed', [1234.567, -1], '1.230'),
+        ('fixed', [-1234.567, -1, True], '-1230'),
+        ('fixed', [44.332], '44,33'),
+        ('find', ['M', 'Miriam McGovern'], 1),
+        ('find', ['m', 'Miriam McGovern'], 6),
+        ('find', ['M', 'Miriam McGovern', 3], 8),
+        ('dollar', [1234.567, 2], '$1.234,57'),
+        ('dollar', [-1234.567, -2], '($1.200)'),
+        ('dollar', [-0.123, 4], '($0,1230)'),
+        ('dollar', [1.5], '$1,50'),
+        ('concat', ['a', 'b', 'c'], 'abc'),
+        ('sum', [1, 4, 5], 10),
+        ('if_', [True, 100, -100], 100),
+        ('if_', [False, 100, -100], -100),
+        ('upper', ['aBc'], 'ABC'),
+        ('char', [65, 66, 67], chr(65)),
+        ('code', ['abc'], ord('a')),
+        ('clean', ['abc'], 'abc'),
+    ]))
+    def test_text_functions(self, func_name, data, answer, base_workbook):
+        self.basic_testing(func_name, data, answer, base_workbook)
+
 
 
 class TestBaseWorkbook:
@@ -115,7 +221,9 @@ class TestBaseWorkbook:
 class TestHelperMethods:
 
     @pytest.mark.parametrize("fml, answer", [
-        ('=SUM(A1:A10) + #REF!', "=np.sum(tbl['A1:A10'].values, axis=None)+XlErrors.REF_ERROR"),
+        ('=DAYS360(F12, G12, method=TRUE)', "=xlf.days360(tbl['F12'].values,tbl['G12'].values,method=True)"),
+        ('=DAYS360(F12, G12)', "=xlf.days360(tbl['F12'].values,tbl['G12'].values)"),
+        ('=SUM(A1:A10) + #REF!', "=xlf.sum(tbl['A1:A10'].values)+XlErrors.REF_ERROR"),
     ])
     def test_pythonize_fml(self, base_workbook, fml, answer):
         py_fml = pythonize_fml(fml, table_name='tbl', axis=None)
