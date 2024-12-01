@@ -103,7 +103,7 @@ def concat(*data):
 
 @register_function('text')
 def dollar(*data):
-    locale.setlocale(locale.LC_ALL, '')
+    # locale.setlocale(locale.LC_ALL, '')
 
     number, decimals = (data + (None,))[:2]
     decimals = decimals or 2
@@ -129,7 +129,7 @@ def find(find_text, within_text, start_num=1):
 
 @register_function('text')
 def fixed(number, decimals=2, no_commas=False):
-    locale.setlocale(locale.LC_ALL, '')
+    # locale.setlocale(locale.LC_ALL, '')
 
     bflag = number < 0
     number =  abs(number)
@@ -167,7 +167,7 @@ def mid(text, start_num, num_chars):
 def numbervalue(text, decimal_separator=None, group_separator=None):
     if not text:
         return 0
-    locale.setlocale(locale.LC_ALL, '')
+    # locale.setlocale(locale.LC_ALL, '')
     decimal_separator = decimal_separator or locale.localeconv()['decimal_point']
     group_separator = group_separator or locale.localeconv()['thousands_sep']
     decimal_separator, group_separator =  decimal_separator[0], group_separator[0]

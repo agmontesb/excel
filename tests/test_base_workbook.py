@@ -7,6 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pytest
 import openpyxl as px
 import pandas as pd
+import locale
 
 from excel_workbook import (
     TABLE_DATA_MAP, ExcelWorkbook, ExcelTable, XlErrors, 
@@ -18,7 +19,10 @@ from utilities import TableComparator, tbl_data
 from fixtures import static_workbook as base_workbook
 import xlfunctions as xlf
 
+
 class TestXlFunctions:
+
+    locale.setlocale(locale.LC_ALL, 'es_CO.UTF-8')
 
     @staticmethod
     def xlFmlStr(tpl, with_kwargs=True):
@@ -221,7 +225,7 @@ class TestBaseWorkbook:
 class TestHelperMethods:
 
     @pytest.mark.parametrize("fml, answer", [
-        ('=DAYS360(F12, G12, method=TRUE)', "=xlf.days360(tbl['F12'].values,tbl['G12'].values,method=True)"),
+        ('=DAYS360(F12, G12, TRUE)', "=xlf.days360(tbl['F12'].values,tbl['G12'].values,True)"),
         ('=DAYS360(F12, G12)', "=xlf.days360(tbl['F12'].values,tbl['G12'].values)"),
         ('=SUM(A1:A10) + #REF!', "=xlf.sum(tbl['A1:A10'].values)+XlErrors.REF_ERROR"),
     ])
