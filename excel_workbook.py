@@ -152,7 +152,7 @@ CIRCULAR_REF = CircularRef()
 
 token_specification = [
     ('NUMBER', r'\d+(\.\d*)?'),  # Integer or decimal number
-    ('STRING', r'".+?"'),  # string
+    ('STRING', r'".*?"'),  # string
     ('ASSIGN', r'\='),  # Assignment operator
     ('SOP', r'^|&|<>'),  # Special operators
     ('OP', r'[+\-*/]'),  # Arithmetic operators
