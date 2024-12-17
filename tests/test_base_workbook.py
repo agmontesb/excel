@@ -1,4 +1,3 @@
-import inspect
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
@@ -8,6 +7,8 @@ import pytest
 import openpyxl as px
 import pandas as pd
 import locale
+import inspect
+from datetime import date
 
 from excel_workbook import (
     TABLE_DATA_MAP, ExcelWorkbook, ExcelTable, XlErrors, 
@@ -26,19 +27,35 @@ class TestXlFunctions:
 
     @staticmethod
     def xlFmlStr(tpl, with_kwargs=True):
+        xlstr = lambda x: f"{chr(34)}{x}{chr(34)}" if '"' not in x else f"\'{x}\'"
         fnc = getattr(xlf, tpl[0])
         sig = inspect.Signature.from_callable(fnc)
         bsig = sig.bind(*tpl[1])
         if not with_kwargs or str(sig) == '(*data)':
             sig_str = ', '.join(
-                f"{chr(34)}{x}{chr(34)}" if isinstance(x, str) else str(x).upper()
+                f'{value}'
                 for x in [*bsig.args, *bsig.kwargs.values()]
+                                if (
+                    value := xlstr(x) if isinstance(x, str) else 
+                    '[' + ', '.join(
+                                xlstr(y) if isinstance(y, str) else str(y).upper()
+                                for y in x
+                            ) + ']' if isinstance(x, list) else 
+                    str(x).upper()
+                )
             )
         else:
             sig_str = ', '.join(
                 f'{value}' if sig.parameters[key].default == inspect._empty else f'{key}={value}' 
                 for key, x in bsig.arguments.items()
-                if (value := f"{chr(34)}{x}{chr(34)}" if isinstance(x, str) else str(x).upper())
+                if (
+                    value := xlstr(x) if isinstance(x, str) else 
+                    '[' + ', '.join(
+                                xlstr(y) if isinstance(y, str) else str(y).upper()
+                                for y in x
+                            ) + ']' if isinstance(x, list) else 
+                    str(x).upper()
+                )
             )
         return f"{tpl[0].replace('_', '').upper()}({sig_str})"
 
@@ -48,6 +65,7 @@ class TestXlFunctions:
 
         tbl = base_workbook['No links, No parameters']['sht1_tbl2']
         fml = TestXlFunctions.xlFmlStr((func_name, data, answer), False)
+        # pfml =pythonize_fml(fml, table_name='tbl')
         assert tbl.evaluate(fml) == answer
 
         cells = ['F12', 'G12', 'H12']
@@ -60,6 +78,26 @@ class TestXlFunctions:
         assert tbl.evaluate(fml) == answer
 
     @pytest.mark.parametrize("func_name, data, answer", map(lambda x: pytest.param(*x, id=TestXlFunctions.xlFmlStr(x, True)), [
+        ('sumifs', [[5, 4, 15, 3, 22, 12, 10, 33], ["Apples", "Apples", "Artichokes", "Artichokes", "Bananas", "Bananas", "Carrots", "Carrots"], '=A*', ["Tom", "Sarah", "Tom", "Sarah", "Tom", "Sarah", "Tom", "Sarah"], '"Tom"'], 20.0),
+        ('sumifs', [[5, 4, 15, 3, 22, 12, 10, 33], ["Apples", "Apples", "Artichokes", "Artichokes", "Bananas", "Bananas", "Carrots", "Carrots"], '<>"Bananas"', ["Tom", "Sarah", "Tom", "Sarah", "Tom", "Sarah", "Tom", "Sarah"], '"Tom"'], 30.0),
+        ('sumif', [["Vegetables", "Vegetables", "Fruits", "", "Vegetables", "Fruits"], "Fruits", [2_300, 5_500, 800, 400, 4_200, 1_200]], 2_000.0),
+        ('sumif', [["Vegetables", "Vegetables", "Fruits", "", "Vegetables", "Fruits"], '"Vegetables"', [2_300, 5_500, 800, 400, 4_200, 1_200]], 12_000.0),
+        ('sumif', [["Tomatoes", "Celery", "Oranges", "Butter", "Carrots", "Apples"], '*es', [2_300, 5_500, 800, 400, 4_200, 1_200]], 4_300.0),
+        ('sumif', [["Vegetables", "Vegetables", "Fruits", "", "Vegetables", "Fruits"], '""', [2_300, 5_500, 800, 400, 4_200, 1_200]], 400.0),
+        ('sumif', [[100000, 200000, 300000, 400000], 300000, [7000, 14000, 21000, 28000]], 21_000.0),
+        ('sumif', [[100000, 200000, 300000, 400000], ">160000", [7000, 14000, 21000, 28000]], 63_000.0),
+        ('sumif', [[100000, 200000, 300000, 400000], ">160000"], 900_000.0),
+    ]))
+    def test_math_functions(self, func_name, data, answer, base_workbook):
+        self.basic_testing(func_name, data, answer, base_workbook)
+    
+
+    @pytest.mark.parametrize("func_name, data, answer", map(lambda x: pytest.param(*x, id=TestXlFunctions.xlFmlStr(x, True)), [
+        ('today', [], xlf.datevalue(date.today().strftime('%d/%m/%Y'))),
+        ('days', ["30/01/2013", "29/02/2012"], 336),
+        ('days', [xlf.datevalue('30/01/2013'), xlf.datevalue('29/02/2012')], 336),
+        ('days', [xlf.datevalue('31/12/9999') + 1, '29/02/2012'], XlErrors.NUM_ERROR),
+        ('days', ['31/2/9999', '29/02/2012'], XlErrors.VALUE_ERROR),
         ('days360', [xlf.datevalue('29/02/2012'), xlf.datevalue('30/01/2013'), True], 331),
         ('days360', [xlf.datevalue('29/02/2012'), xlf.datevalue('30/01/2013')], 330),
         ('days360', [xlf.datevalue('28/02/2012'), xlf.datevalue('30/01/2013'), True], 332),
