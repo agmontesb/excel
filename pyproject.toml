@@ -3,8 +3,12 @@ name = "excel"
 version = "0.1.0"
 description = ""
 authors = ["agmontesb <agmontesb@gmail.com>"]
-package-mode = false
+package-mode = true
 readme = "README.md"
+packages = [
+    { include = "*.py" },
+    { include = "xlfunctions/*.py" },
+]
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -21,13 +25,41 @@ pytest-cov = "^5.0.0"
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^6.29.5"
 
+
+[tool.pdm.build]
+includes = ["*.py", "xlfunctions/*.py"]
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
 addopts = "-ra -q"
 testpaths = [
     "tests",
+]
+[project]
+authors = [
+    {name = "agmontesb", email = "agmontesb@gmail.com"},
+]
+requires-python = "<4.0,>=3.10"
+dependencies = [
+    "pandas<3.0.0,>=2.2.3",
+    "numpy<3.0.0,>=2.1.1",
+    "openpyxl<4.0.0,>=3.1.5",
+    "ipython<9.0.0,>=8.27.0",
+    "pytest<9.0.0,>=8.3.3",
+    "pytest-env<2.0.0,>=1.1.5",
+    "coverage<8.0.0,>=7.6.1",
+    "pytest-cov<6.0.0,>=5.0.0",
+]
+name = "excel"
+version = "0.1.0"
+description = ""
+package-mode = true
+readme = "README.md"
+
+[dependency-groups]
+dev = [
+    "ipykernel<7.0.0,>=6.29.5",
 ]
