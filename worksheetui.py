@@ -150,22 +150,168 @@ class WsHeadindg(tk.Frame):
             t_width += width
 
 
+CELL_WIDTH = 60  # Default width for cells in the worksheet
+CELL_HEIGHT = 20  # Default height for cells in the worksheet
+
+GRID_COLOR = "lightgray"  # Default grid color for the worksheet
+
+
+
 class Sketchpad(tk.Canvas):
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
-        self.color = None
-        self.bind("<Button-1>", self.save_posn)
-        self.bind("<B1-Motion>", self.add_line)
-        self.setGUI()
-        self.setColor("black")  # Set default color
+        self.active_cell = None  # Variable to store the active cell
+        self.selected_cells = None  # Variable to store the selected cell
+        self.bind("<Button-1>", self.mouse_click)
+        # bind arrow keys to move the active cell
+        self.bind("<Up>", self.arrow_click)
+        self.bind("<Down>", self.arrow_click)
+        self.bind("<Left>", self.arrow_click)
+        self.bind("<Right>", self.arrow_click)
+        self.bind("<Configure>", self.redraw_sheet)
+        self.focus_set()  # Set focus to the canvas
+
+    def arrow_click(self, event):
+        """Sets the active cell based on the arrow key pressed."""
+
+        x_coord, y_coord = self.active_cell
+        x = (x_coord - 40) // CELL_WIDTH * CELL_WIDTH
+        y = (y_coord - CELL_HEIGHT) // CELL_HEIGHT * CELL_HEIGHT
+        if event.keysym == "Up":
+            y -= CELL_HEIGHT
+        elif event.keysym == "Down":
+            y += CELL_HEIGHT
+        elif event.keysym == "Left":
+            x -= CELL_WIDTH
+        elif event.keysym == "Right":
+            x += CELL_WIDTH
+
+        acell_x0, acell_y0 = max(40, x + 40), max(CELL_HEIGHT, y + CELL_HEIGHT)
+        acell_x1, acell_y1 = acell_x0 + CELL_WIDTH, acell_y0 + CELL_HEIGHT
+        if not event.state & 0x0001:  # Check if SHIFT is pressed
+            sel_x0, sel_y0 = acell_x0, acell_y0
+            sel_x1, sel_y1 = acell_x1, acell_y1
+            self.set_active_cell(acell_x0, acell_y0)
+        else: # If SHIFT is pressed, adjust the selection
+            sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
+
+
+        # Check if the SHIFT key is pressed to move the active cell
+        if event.state & 0x0001:  # Check if SHIFT is pressed
+            sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
+            
+            if sel_x0 < acell_x1:
+                if sel_y0 < acell_y1: # Primer cuadrante
+                    sel_x1 = acell_x1
+                    sel_y1 = acell_y1
+                else: # segundo cuadrante 
+                    sel_x1 = acell_x1
+                    sel_y0 = acell_y0
+            elif sel_x1 > acell_x0:
+                if sel_y1 < acell_y0: # tercer cuadrante
+                    sel_x0 = acell_x0
+                    sel_y1 = acell_y1
+                else: # cuarto cuadrante
+                    sel_x1 = sel_x0 + CELL_WIDTH
+                    sel_y1 = sel_y0 + CELL_HEIGHT
+                    sel_x0 = acell_x0
+                    sel_y0 = acell_y0
+        self.selected_cells = (sel_x0, sel_y0, sel_x1, sel_y1)
+        # Set the active cell to the new coordinates
+
+        return "break"  # Prevent default behavior of arrow keys
+
+    def mouse_click(self, event):
+        """Sets the active cell based on the click position."""
+        x = (event.x - 40) // CELL_WIDTH * CELL_WIDTH
+        y = (event.y - CELL_HEIGHT) // CELL_HEIGHT * CELL_HEIGHT
+        self.set_active_cell(x + 40, y + CELL_HEIGHT)
+        self.focus_set()  # Set focus to the canvas
+
+    def set_active_cell(self, x, y):
+        # Set the tag "selected" for the region in coords (40, CELL_HEIGHT, 40 + 5*CELL_WIDTH, CELL_HEIGHT + 5*CELL_HEIGHT) rectangle
+        self.delete("selected_cells")
+        self.create_rectangle(*self.selected_cells,
+            fill="white", outline="black", tags="selected_cells")
+        self.tag_lower("selected_cells", "grid_lines")
+
+
+        self.delete("active_cell")
+        """Draws the active cell rectangle."""
+        self.create_rectangle(
+            x, y, x + CELL_WIDTH, y + CELL_HEIGHT, 
+            fill="yellow", outline="black", tags="active_cell"
+        )
+        row_selected = self.find_withtag("row_selected")
+        self.dtag("row_selected")
+        for row_id in row_selected:
+            self.itemconfigure(row_id, fill="green")
+        # get id for rectangle with coords (x, y, x + CELL_WIDTH, y + CELL_HEIGHT)
+        self.addtag_withtag("row_selected", self.find_closest(0, y + CELL_HEIGHT // 2))
+        # change color for col_selected and row_selected
+        # delete previous col_selected if exists
+        self.itemconfigure("row_selected", fill="red")
+        col_selected = self.find_withtag("col_selected")
+        self.dtag("col_selected")
+        for col_id in col_selected:
+            self.itemconfigure(col_id, fill="red")        
+        # get id for rectangle with coords (x, 0, x + CELL_WIDTH, CELL_HEIGHT)
+        self.addtag_withtag("col_selected", self.find_closest(x + CELL_WIDTH // 2, 0))
+        # change color for col_selectd and row_selected
+        self.itemconfigure("col_selected", fill="blue")
+        self.itemconfigure("row_selected", fill="blue")
+        
+        self.active_cell = (x, y)  # Store the active cell coordinates
 
     def setGUI(self):
-        id = self.create_rectangle(10, 10, 30, 30, fill="red", tags=("palette", "palettered"))
-        self.tag_bind(id, "<Button-1>", lambda  x: self.setColor("red"))
-        id = self.create_rectangle(10, 35, 30, 55, fill="blue", tags=("palette", "paletteblue"))
-        self.tag_bind(id, "<Button-1>", lambda x: self.setColor("blue"))
-        id = self.create_rectangle(10, 60, 30, 80, fill="black", tags=("palette", "paletteblack", "paletteSelected"))
-        self.tag_bind(id, "<Button-1>", lambda x: self.setColor("black"))
+        x0 = 40
+        width = 400  # Default width if not set
+        for x in range(x0, width, CELL_WIDTH):
+            self.create_rectangle(x, 0, x + CELL_WIDTH, CELL_HEIGHT, fill="red", outline="black")
+        y0 = CELL_HEIGHT
+        height = 400  # Default height if not set
+        for y in range(y0, height, CELL_HEIGHT):
+            self.create_rectangle(0, y, x0, y + CELL_HEIGHT, fill="green", outline="black")
+
+
+        # id = self.create_rectangle(10, 10, 30, 30, fill="red", tags=("palette", "palettered"))
+        # self.tag_bind(id, "<Button-1>", lambda  x: self.setColor("red"))
+        # id = self.create_rectangle(10, 35, 30, 55, fill="blue", tags=("palette", "paletteblue"))
+        # self.tag_bind(id, "<Button-1>", lambda x: self.setColor("blue"))
+        # id = self.create_rectangle(10, 60, 30, 80, fill="black", tags=("palette", "paletteblack", "paletteSelected"))
+        # self.tag_bind(id, "<Button-1>", lambda x: self.setColor("black"))
+
+    def redraw_sheet(self, event):
+        "Redraws the sheetui when the window is resized or needs updating."
+        active_cell = self.find_withtag("active_cell")
+        self.delete("all")
+        x0 = 40
+        width = event.width  # Use the event width to set the width dynamically
+        for x in range(x0, width, CELL_WIDTH):
+            self.create_rectangle(x, 0, x + CELL_WIDTH, CELL_HEIGHT, fill="red", outline="black")
+            # Draw cell headings
+            label = self.create_text(x + CELL_WIDTH // 2, CELL_HEIGHT // 2, text=f"Col {x // CELL_WIDTH + 1}", fill="black")
+            self.addtag_withtag("columns", label)  # Add tag for columns
+            # Draw vertical lines
+            self.create_line(x, 0, x, event.height, fill=GRID_COLOR, tags="grid_lines")
+        y0 = CELL_HEIGHT
+        height = event.height  # Use the event height to set the height dynamically
+        for y in range(y0, height, CELL_HEIGHT):
+            self.create_rectangle(0, y, x0, y + CELL_HEIGHT, fill="green", outline="black")
+            # draw row headings
+            label = self.create_text(x0 // 2, y + CELL_HEIGHT // 2, text=f"Row {y // CELL_HEIGHT + 1}", fill="black")
+            self.addtag_withtag("rows", label)  # Add tag for rows
+            # Draw horizontal lines
+            self.create_line(0, y, width, y, fill=GRID_COLOR, tags="grid_lines")
+
+        x, y = 40, CELL_HEIGHT
+        if self.active_cell is None:
+            self.selected_cells = (x, y, x + CELL_WIDTH, y + CELL_HEIGHT)
+        if active_cell:
+            # Redraw the active cell if it exists
+            x, y, _, _ = self.coords(active_cell[0])
+        self.set_active_cell(x, y)
+
 
     def setColor(self, color):
         self.color = color
