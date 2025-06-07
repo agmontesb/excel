@@ -174,50 +174,44 @@ class Sketchpad(tk.Canvas):
     def arrow_click(self, event):
         """Sets the active cell based on the arrow key pressed."""
 
-        x_coord, y_coord = self.active_cell
-        x = (x_coord - 40) // CELL_WIDTH * CELL_WIDTH
-        y = (y_coord - CELL_HEIGHT) // CELL_HEIGHT * CELL_HEIGHT
+        acell_x0, acell_y0 = self.active_cell
+        dx = dy = 0  # Initialize dx and dy for movement
         if event.keysym == "Up":
-            y -= CELL_HEIGHT
+            dy = -CELL_HEIGHT
         elif event.keysym == "Down":
-            y += CELL_HEIGHT
+            dy = CELL_HEIGHT
         elif event.keysym == "Left":
-            x -= CELL_WIDTH
+            dx = -CELL_WIDTH
         elif event.keysym == "Right":
-            x += CELL_WIDTH
+            dx = CELL_WIDTH
 
-        acell_x0, acell_y0 = max(40, x + 40), max(CELL_HEIGHT, y + CELL_HEIGHT)
-        acell_x1, acell_y1 = acell_x0 + CELL_WIDTH, acell_y0 + CELL_HEIGHT
         if not event.state & 0x0001:  # Check if SHIFT is pressed
+            acell_x0 = max(40, acell_x0 + dx)
+            acell_y0 = max(CELL_HEIGHT, acell_y0 + dy)
             sel_x0, sel_y0 = acell_x0, acell_y0
-            sel_x1, sel_y1 = acell_x1, acell_y1
-            self.set_active_cell(acell_x0, acell_y0)
+            sel_x1, sel_y1 = acell_x0 + CELL_WIDTH, acell_y0 + CELL_HEIGHT
         else: # If SHIFT is pressed, adjust the selection
             sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
 
+            if xset := set([sel_x0, sel_x1]) - set([acell_x0, acell_x0 + CELL_WIDTH]):
+                sel_x0 = xset.pop()
+            else:
+                sel_x0 = (acell_x0 + CELL_WIDTH) if dx > 0 else acell_x0
 
-        # Check if the SHIFT key is pressed to move the active cell
-        if event.state & 0x0001:  # Check if SHIFT is pressed
-            sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
-            
-            if sel_x0 < acell_x1:
-                if sel_y0 < acell_y1: # Primer cuadrante
-                    sel_x1 = acell_x1
-                    sel_y1 = acell_y1
-                else: # segundo cuadrante 
-                    sel_x1 = acell_x1
-                    sel_y0 = acell_y0
-            elif sel_x1 > acell_x0:
-                if sel_y1 < acell_y0: # tercer cuadrante
-                    sel_x0 = acell_x0
-                    sel_y1 = acell_y1
-                else: # cuarto cuadrante
-                    sel_x1 = sel_x0 + CELL_WIDTH
-                    sel_y1 = sel_y0 + CELL_HEIGHT
-                    sel_x0 = acell_x0
-                    sel_y0 = acell_y0
+            if yset := set([sel_y0, sel_y1]) - set([acell_y0, acell_y0 + CELL_HEIGHT]):
+                sel_y0 = yset.pop()
+            else:
+                sel_y0 = (acell_y0 + CELL_HEIGHT) if dy > 0 else acell_y0
+
+            sel_x0 = max(40, sel_x0 + dx)
+            sel_y0 = max(CELL_HEIGHT, sel_y0 + dy)
+
+            sel_x1 = max(sel_x0, acell_x0, acell_x0 + CELL_WIDTH)
+            sel_x0 = min(sel_x0, acell_x0, acell_x0 + CELL_WIDTH)
+            sel_y1 = max(sel_y0, acell_y0, acell_y0 + CELL_HEIGHT)
+            sel_y0 = min(sel_y0, acell_y0, acell_y0 + CELL_HEIGHT)
         self.selected_cells = (sel_x0, sel_y0, sel_x1, sel_y1)
-        # Set the active cell to the new coordinates
+        self.set_active_cell(acell_x0, acell_y0)
 
         return "break"  # Prevent default behavior of arrow keys
 
