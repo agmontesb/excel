@@ -168,13 +168,31 @@ class Sketchpad(tk.Canvas):
         self.bind("<Down>", self.arrow_click)
         self.bind("<Left>", self.arrow_click)
         self.bind("<Right>", self.arrow_click)
+        self.bind("<Return>", self.arrow_click)
         self.bind("<Configure>", self.redraw_sheet)
         self.focus_set()  # Set focus to the canvas
 
     def arrow_click(self, event):
         """Sets the active cell based on the arrow key pressed."""
 
-        acell_x0, acell_y0 = self.active_cell
+        acell_x0, acell_y0, acell_x1, acell_y1 = self.active_cell
+
+        if event.keysym == "Return":
+            if self.selected_cells != self.active_cell:
+                sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
+                acell_x0, acell_y0, acell_x1, acell_y1 = self.active_cell
+                if event.state & 0x0001:  # If SHIFT is pressed
+                    acell_x0 = acell_x0 if  acell_y0 > sel_y0 else ((acell_x0 - CELL_WIDTH) if acell_x0 > sel_x0 else (sel_x1 - CELL_WIDTH))
+                    acell_y0 = (acell_y0 - CELL_HEIGHT) if acell_y0 > sel_y0 else (sel_y1 - CELL_HEIGHT)
+                else:  # If SHIFT is not pressed
+                    acell_y0 = acell_y1 if acell_y1 < sel_y1 else sel_y0
+                    acell_x0 = acell_x0 if acell_y1 < sel_y1 else (acell_x1 if acell_x1 < sel_x1 else sel_x0)
+                self.set_active_cell(acell_x0, acell_y0, acell_x0 + CELL_WIDTH, acell_y0 + CELL_HEIGHT)
+                return "break"
+            else:
+                event.keysym = "Up" if event.state & 0x0001 else "Down"  # Treat Return as Down for consistency
+                event.state = 0
+
         dx = dy = 0  # Initialize dx and dy for movement
         if event.keysym == "Up":
             dy = -CELL_HEIGHT
@@ -192,37 +210,53 @@ class Sketchpad(tk.Canvas):
             sel_x1, sel_y1 = acell_x0 + CELL_WIDTH, acell_y0 + CELL_HEIGHT
         else: # If SHIFT is pressed, adjust the selection
             sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
-
-            if xset := set([sel_x0, sel_x1]) - set([acell_x0, acell_x0 + CELL_WIDTH]):
-                sel_x0 = xset.pop()
+            xset = set([sel_x0, sel_x1]) - set([acell_x0, acell_x0 + CELL_WIDTH])
+            if len(xset) == 2:
+                if dx < 0:
+                    sel_x0 += dx
+                else:
+                    sel_x1 += dx
             else:
-                sel_x0 = (acell_x0 + CELL_WIDTH) if dx > 0 else acell_x0
+                if len(xset) == 0:
+                    sel_x0 = (acell_x1 if dx > 0 else acell_x0)
+                else:   # len(xset) == 1:
+                    sel_x0 = xset.pop()
+                sel_x0 += dx
+                sel_x1 = max(sel_x0, acell_x0, acell_x1)
+                sel_x0 = min(sel_x0, acell_x0, acell_x1)
 
-            if yset := set([sel_y0, sel_y1]) - set([acell_y0, acell_y0 + CELL_HEIGHT]):
-                sel_y0 = yset.pop()
+            yset = set([sel_y0, sel_y1]) - set([acell_y0, acell_y0 + CELL_HEIGHT])
+            if len(yset) == 2:
+                if dy < 0:
+                    sel_y0 += dy
+                else:
+                    sel_y1 += dy
             else:
-                sel_y0 = (acell_y0 + CELL_HEIGHT) if dy > 0 else acell_y0
+                if len(yset) == 0:
+                    sel_y0 = acell_y1 if dy > 0 else acell_y0
+                else:   # len(yset) == 1:
+                    sel_y0 = yset.pop()
+                sel_y0 += dy
+                sel_y1 = max(sel_y0, acell_y0, acell_y1)
+                sel_y0 = min(sel_y0, acell_y0, acell_y1)
 
-            sel_x0 = max(40, sel_x0 + dx)
-            sel_y0 = max(CELL_HEIGHT, sel_y0 + dy)
+        sel_x0 = max(40, sel_x0)        # Assure canvas boundaries
+        sel_y0 = max(CELL_HEIGHT, sel_y0)
 
-            sel_x1 = max(sel_x0, acell_x0, acell_x0 + CELL_WIDTH)
-            sel_x0 = min(sel_x0, acell_x0, acell_x0 + CELL_WIDTH)
-            sel_y1 = max(sel_y0, acell_y0, acell_y0 + CELL_HEIGHT)
-            sel_y0 = min(sel_y0, acell_y0, acell_y0 + CELL_HEIGHT)
         self.selected_cells = (sel_x0, sel_y0, sel_x1, sel_y1)
-        self.set_active_cell(acell_x0, acell_y0)
+        self.set_active_cell(acell_x0, acell_y0, acell_x0 + CELL_WIDTH, acell_y0 + CELL_HEIGHT)
 
         return "break"  # Prevent default behavior of arrow keys
 
     def mouse_click(self, event):
         """Sets the active cell based on the click position."""
-        x = (event.x - 40) // CELL_WIDTH * CELL_WIDTH
-        y = (event.y - CELL_HEIGHT) // CELL_HEIGHT * CELL_HEIGHT
-        self.set_active_cell(x + 40, y + CELL_HEIGHT)
+        x = 40 + (event.x - 40) // CELL_WIDTH * CELL_WIDTH
+        y = CELL_HEIGHT + (event.y - CELL_HEIGHT) // CELL_HEIGHT * CELL_HEIGHT
+        self.selected_cells = (x, y, x + CELL_WIDTH, y + CELL_HEIGHT)
+        self.set_active_cell(*self.selected_cells)
         self.focus_set()  # Set focus to the canvas
 
-    def set_active_cell(self, x, y):
+    def set_active_cell(self, x0, y0, x1, y1):
         # Set the tag "selected" for the region in coords (40, CELL_HEIGHT, 40 + 5*CELL_WIDTH, CELL_HEIGHT + 5*CELL_HEIGHT) rectangle
         self.delete("selected_cells")
         self.create_rectangle(*self.selected_cells,
@@ -233,29 +267,38 @@ class Sketchpad(tk.Canvas):
         self.delete("active_cell")
         """Draws the active cell rectangle."""
         self.create_rectangle(
-            x, y, x + CELL_WIDTH, y + CELL_HEIGHT, 
+            x0, y0, x1, y1, 
             fill="yellow", outline="black", tags="active_cell"
         )
-        row_selected = self.find_withtag("row_selected")
-        self.dtag("row_selected")
-        for row_id in row_selected:
-            self.itemconfigure(row_id, fill="green")
-        # get id for rectangle with coords (x, y, x + CELL_WIDTH, y + CELL_HEIGHT)
-        self.addtag_withtag("row_selected", self.find_closest(0, y + CELL_HEIGHT // 2))
+
+        sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
+
         # change color for col_selected and row_selected
+        old_selected = self.find_withtag("row_selected")
+        new_selected = [srow for srow in self.find_enclosed(-1, sel_y0 - 1, 40 + 1, sel_y1 + 1) if self.type(srow) == "rectangle"]
+        to_remove = set(old_selected) - set(new_selected)
+        for row_id in to_remove:
+            self.dtag(row_id, "row_selected")
+            self.itemconfigure(row_id, fill="green")
+        to_add = set(new_selected) - set(old_selected)
+        for row_id in to_add:
+            self.addtag_withtag("row_selected", row_id)
+            self.itemconfigure(row_id, fill="blue")
+        # self.addtag_withtag("row_selected", *selected_rows)
         # delete previous col_selected if exists
-        self.itemconfigure("row_selected", fill="red")
-        col_selected = self.find_withtag("col_selected")
-        self.dtag("col_selected")
-        for col_id in col_selected:
-            self.itemconfigure(col_id, fill="red")        
-        # get id for rectangle with coords (x, 0, x + CELL_WIDTH, CELL_HEIGHT)
-        self.addtag_withtag("col_selected", self.find_closest(x + CELL_WIDTH // 2, 0))
-        # change color for col_selectd and row_selected
-        self.itemconfigure("col_selected", fill="blue")
-        self.itemconfigure("row_selected", fill="blue")
+        # self.itemconfigure("row_selected", fill="red")
+        old_selected = self.find_withtag("col_selected")
+        new_selected = [scol for scol in self.find_enclosed(sel_x0 - 1, -1, sel_x1 + 1, CELL_HEIGHT + 1) if self.type(scol) == "rectangle"]
+        to_remove = set(old_selected) - set(new_selected)
+        for col_id in to_remove:
+            self.dtag(col_id, "col_selected")
+            self.itemconfigure(col_id, fill="red")
+        to_add = set(new_selected) - set(old_selected)
+        for col_id in to_add:
+            self.addtag_withtag("col_selected", col_id)
+            self.itemconfigure(col_id, fill="blue")
         
-        self.active_cell = (x, y)  # Store the active cell coordinates
+        self.active_cell = (x0, y0, x1, y1)  # Store the active cell coordinates
 
     def setGUI(self):
         x0 = 40
@@ -298,13 +341,14 @@ class Sketchpad(tk.Canvas):
             # Draw horizontal lines
             self.create_line(0, y, width, y, fill=GRID_COLOR, tags="grid_lines")
 
-        x, y = 40, CELL_HEIGHT
+        x0, y0 = 40, CELL_HEIGHT
+        x1, y1 = x0 + CELL_WIDTH, y0 + CELL_HEIGHT
         if self.active_cell is None:
-            self.selected_cells = (x, y, x + CELL_WIDTH, y + CELL_HEIGHT)
+            self.selected_cells = (x0, y0, x1, y1)
         if active_cell:
             # Redraw the active cell if it exists
-            x, y, _, _ = self.coords(active_cell[0])
-        self.set_active_cell(x, y)
+            x0, y0, x1, y1 = self.coords(active_cell[0])
+        self.set_active_cell(x0, y0, x1, y1)
 
 
     def setColor(self, color):
