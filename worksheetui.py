@@ -252,8 +252,18 @@ class Sketchpad(tk.Canvas):
         """Sets the active cell based on the click position."""
         x = 40 + (event.x - 40) // CELL_WIDTH * CELL_WIDTH
         y = CELL_HEIGHT + (event.y - CELL_HEIGHT) // CELL_HEIGHT * CELL_HEIGHT
-        self.selected_cells = (x, y, x + CELL_WIDTH, y + CELL_HEIGHT)
-        self.set_active_cell(*self.selected_cells)
+        clicked_cell = (x, y, x + CELL_WIDTH, y + CELL_HEIGHT)
+        acell_x0, acell_y0, acell_x1, acell_y1 = self.active_cell
+        if event.state & 0x0001:  # If SHIFT is pressed
+            sel_x0 = min(x, acell_x0)
+            sel_y0 = min(y, acell_y0)
+            sel_x1 = max(x + CELL_WIDTH, acell_x1)
+            sel_y1 = max(y + CELL_HEIGHT, acell_y1)
+            self.selected_cells = (sel_x0, sel_y0, sel_x1, sel_y1)
+        else:  # If SHIFT is not pressed
+            self.selected_cells = clicked_cell
+            self.active_cell = clicked_cell
+        self.set_active_cell(*self.active_cell)
         self.focus_set()  # Set focus to the canvas
 
     def set_active_cell(self, x0, y0, x1, y1):
