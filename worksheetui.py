@@ -23,7 +23,7 @@ GRID_COLOR = "lightgray"  # Default grid color for the worksheet
 class SheetUI(tk.Canvas):
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
-        self.sheet_viewport = (1, 1, 1, 1)  # Default pivot cell
+        self.sheet_viewport = (5, 5, 5, 5)  # Default pivot cell
         self.active_cell = self.sheet_viewport[:2]  # Variable to store the active cell
         self.selected_cells = (*self.active_cell, *self.active_cell)  # Variable to store the selected cell
         self.bind("<Configure>", self.redraw_sheet)
@@ -52,37 +52,59 @@ class SheetUI(tk.Canvas):
         xcell = (x - COL_CELLS_WIDTH) // CELL_WIDTH + self.sheet_viewport[0]
         ycell = (y - CELL_HEIGHT) // CELL_HEIGHT + self.sheet_viewport[1]
         return (xcell, ycell)
+    
+    def setGUI(self, width, height, xroot=0, yroot=0):
+        """Sets the GUI for the worksheet with a specified width and height."""
+
+        bflag = xroot == 0 and yroot == 0
+        if bflag:
+            self.create_rectangle(0, 0, COL_CELLS_WIDTH, ROW_CELLS_HEIGHT, fill="green", outline="black")
+
+        viewport_x0, viewport_y0, xcell, ycell = self.sheet_viewport
+        if yroot == 0:
+            x1 = xroot or COL_CELLS_WIDTH
+            xcell = self.cell_containing_coords(x1, 0)[0]
+            while x1 < xroot + width:
+                x0, _, x1, _ = self.cell_coordinates(xcell, 0)
+                self.create_rectangle(x0, 0, x1, ROW_CELLS_HEIGHT, fill="green", outline="black")
+                # Draw cell headings
+                label = self.create_text((x0 + x1) // 2, ROW_CELLS_HEIGHT // 2, text=f"Col {xcell}", fill="black")
+                self.addtag_withtag("columns", label)  # Add tag for columns
+                # Draw vertical lines
+                self.create_line(x0, 0, x0, height, fill=GRID_COLOR, tags="grid_lines")
+                xcell += 1
+            xcell -= 1
+
+        if xroot == 0:
+            y1 = yroot or ROW_CELLS_HEIGHT
+            ycell = self.cell_containing_coords(0, y1)[1]
+            while y1 < yroot + height:
+                _, y0, _, y1 = self.cell_coordinates(0, ycell)
+                self.create_rectangle(0, y0, COL_CELLS_WIDTH, y1, fill="green", outline="black")
+                # Draw row headings
+                label = self.create_text(COL_CELLS_WIDTH // 2, (y0 + y1) // 2, text=f"Row {ycell}", fill="black")
+                self.addtag_withtag("rows", label)
+                # Draw horizontal lines
+                self.create_line(0, y0, width, y0, fill=GRID_COLOR, tags="grid_lines")
+                ycell += 1
+            ycell -= 1
+
+        # Draw the cells content
+        for x in range(viewport_x0, xcell + 1):
+            for y in range(viewport_y0, ycell + 1):
+                x0, y0, x1, y1 = self.cell_coordinates(x, y)
+                # Draw cell content (placeholder text)
+                self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"Cell {x},{y}", fill="black", tags="cell_content")
+        if bflag:
+            self.sheet_viewport = (viewport_x0, viewport_y0, xcell, ycell)
+        self.set_active_cell()
+
+
 
     def redraw_sheet(self, event):
         "Redraws the sheetui when the window is resized or needs updating."
-        active_cell = self.find_withtag("active_cell")
-        self.delete("all")
-        xcell, ycell = self.sheet_viewport[:2]  # Get the current pivot cell coordinates
-        x1 = COL_CELLS_WIDTH  # Start from the column cell width
-        width = event.width  # Use the event width to set the width dynamically
-        while x1 < width:
-            x0, y0, x1, y1 = self.cell_coordinates(xcell, ycell)
-            self.create_rectangle(x0, 0, x1, ROW_CELLS_HEIGHT, fill="red", outline="black")
-            # Draw cell headings
-            label = self.create_text((x0 + x1) // 2, ROW_CELLS_HEIGHT // 2, text=f"Col {xcell}", fill="black")
-            self.addtag_withtag("columns", label)  # Add tag for columns
-            # Draw vertical lines
-            self.create_line(x0, 0, x0, event.height, fill=GRID_COLOR, tags="grid_lines")
-            xcell += 1
-
-        y1 = ROW_CELLS_HEIGHT
-        while y1 < event.height:
-            x0, y0, x1, y1 = self.cell_coordinates(xcell, ycell)
-            self.create_rectangle(0, y0, COL_CELLS_WIDTH, y1, fill="green", outline="black")
-            # Draw row headings
-            label = self.create_text(COL_CELLS_WIDTH // 2, (y0 + y1) // 2, text=f"Row {ycell}", fill="black")
-            self.addtag_withtag("rows", label)
-            # Draw horizontal lines
-            self.create_line(0, y0, width, y0, fill=GRID_COLOR, tags="grid_lines")
-            ycell += 1
-
-        self.sheet_viewport = self.sheet_viewport[:2] + (xcell, ycell)  # Update the pivot cell coordinates
-        self.set_active_cell()
+        width, height = event.width, event.height
+        self.setGUI(width, height)
 
     def arrow_click(self, event):
         """Sets the active cell based on the arrow key pressed."""
@@ -155,9 +177,58 @@ class SheetUI(tk.Canvas):
         sel_y0 = max(1, sel_y0)
 
         self.selected_cells = (sel_x0, sel_y0, sel_x1, sel_y1)
+        self.set_sheet_viewport()  # Adjust the viewport if necessary
         self.set_active_cell()
 
         return "break"  # Prevent default behavior of arrow keys
+    
+    def set_sheet_viewport(self):
+        viewport_x0, viewport_y0, viewport_x1, viewport_y1 = self.sheet_viewport
+        sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
+        acell_x0, acell_y0 = self.active_cell
+
+        width, height = self.winfo_width(), self.winfo_height()
+        xroot, yroot = 0, 0
+        x0 = min(sel_x0, acell_x0)
+        if viewport_x0 > x0:
+            # Remove items that falls beyond the right edge
+            dx = self.cell_coordinates(x0, 1)[0] - COL_CELLS_WIDTH
+            lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+            viewport_x1, dmy = self.cell_containing_coords(width + dx, 0)
+            linf_x = self.cell_coordinates(viewport_x1, dmy)[2]
+
+            items = self.find_enclosed(linf_x - 1, -1, lsup_x + 1, lsup_y + 1)
+            self.delete(*items)
+
+            # Move the viewport dx pixel to the left
+            items = self.find_enclosed(COL_CELLS_WIDTH - 1, -1, linf_x + 1, lsup_y + 1)
+            for item in items:
+                self.move(item, -dx, 0)
+            viewport_x0 = x0
+            width = -dx
+            xroot = COL_CELLS_WIDTH  # Adjust root x position to account for column width
+
+        y0 = min(sel_y0, acell_y0)
+        if viewport_y0 > y0:
+            # Remove items that falls below the bottom edge
+            dy = self.cell_coordinates(1, y0)[1] - ROW_CELLS_HEIGHT
+            lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+            dmy, viewport_y1 = self.cell_containing_coords(0, height + dy)
+            linf_y = self.cell_coordinates(dmy, viewport_y1)[3]
+
+            items = self.find_enclosed(-1, linf_y - 1, lsup_x + 1, lsup_y + 1)
+            self.delete(*items)
+
+            # Move the viewport dy pixel up
+            items = self.find_enclosed(-1, ROW_CELLS_HEIGHT - 1, lsup_x + 1, linf_y + 1)
+            for item in items:
+                self.move(item, 0, -dy)
+            viewport_y0 = y0
+            height = -dy
+            yroot = ROW_CELLS_HEIGHT  # Adjust root y position to account for row height
+        if set(self.sheet_viewport) != {viewport_x0, viewport_y0, viewport_x1, viewport_y1}:
+            self.sheet_viewport = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
+            self.setGUI(width, height, xroot, yroot)  # Redraw the sheet with the new viewport
 
     def mouse_click(self, event):
         """Sets the active cell based on the click position."""
@@ -180,7 +251,7 @@ class SheetUI(tk.Canvas):
         self.delete("selected_cells")
         sel_x0, sel_y0, sel_x1, sel_y1 = self.area_coordinates(*self.selected_cells)
         self.create_rectangle(sel_x0, sel_y0, sel_x1, sel_y1,
-            fill="white", outline="black", tags="selected_cells")
+            fill="lightblue", outline="black", tags="selected_cells")
         self.tag_lower("selected_cells", "grid_lines")
 
 
@@ -192,6 +263,9 @@ class SheetUI(tk.Canvas):
             fill="yellow", outline="black", tags="active_cell"
         )
         self.itemconfigure("active_cell", outline="black", width=2)
+        # place cell_content above the other tags
+        self.tag_raise("cell_content")
+
 
         # change color for col_selected and row_selected
         old_selected = self.find_withtag("row_selected")
@@ -212,23 +286,12 @@ class SheetUI(tk.Canvas):
         to_remove = set(old_selected) - set(new_selected)
         for col_id in to_remove:
             self.dtag(col_id, "col_selected")
-            self.itemconfigure(col_id, fill="red")
+            self.itemconfigure(col_id, fill="green")
         to_add = set(new_selected) - set(old_selected)
         for col_id in to_add:
             self.addtag_withtag("col_selected", col_id)
             self.itemconfigure(col_id, fill="blue")
         
-    def setGUI(self):
-        x0 = 40
-        width = 400  # Default width if not set
-        for x in range(x0, width, CELL_WIDTH):
-            self.create_rectangle(x, 0, x + CELL_WIDTH, CELL_HEIGHT, fill="red", outline="black")
-        y0 = CELL_HEIGHT
-        height = 400  # Default height if not set
-        for y in range(y0, height, CELL_HEIGHT):
-            self.create_rectangle(0, y, x0, y + CELL_HEIGHT, fill="green", outline="black")
-
-
     def setColor(self, color):
         self.color = color
         self.dtag("all", "paletteSelected")
@@ -242,7 +305,30 @@ if __name__ == "__main__":
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
 
-    sheetui = SheetUI(root)
-    sheetui.grid(column=0, row=0, sticky=(tk.N, tk.W, tk.E, tk.S))
+    # Create a frame to hold the canvas and scrollbars
+    frame = ttk.Frame(root)
+    frame.grid(column=0, row=0, sticky=(tk.N, tk.W, tk.E, tk.S))
+    frame.columnconfigure(0, weight=1)
+    frame.rowconfigure(0, weight=1)
+
+    # Create vertical and horizontal scrollbars
+    v_scroll = ttk.Scrollbar(frame, orient="vertical")
+    h_scroll = ttk.Scrollbar(frame, orient="horizontal")
+
+    # Create the SheetUI canvas
+    sheetui = SheetUI(frame, bg="white", 
+                      yscrollcommand=v_scroll.set, 
+                      xscrollcommand=h_scroll.set,
+                    #   scrollregion=(200, 200, 400, 400)
+    )  # Adjust scrollregion as needed
+
+    # Configure scrollbars to control the canvas
+    v_scroll.config(command=sheetui.yview)
+    h_scroll.config(command=sheetui.xview)
+
+    # Layout
+    sheetui.grid(row=0, column=0, sticky="nsew")
+    v_scroll.grid(row=0, column=1, sticky="ns")
+    h_scroll.grid(row=1, column=0, sticky="ew")
 
     root.mainloop()
