@@ -56,58 +56,6 @@ class SheetUI(tk.Canvas):
     def setGUI(self, width, height, xroot=0, yroot=0):
         """Sets the GUI for the worksheet with a specified width and height."""
 
-        bflag = xroot == 0 and yroot == 0
-        if bflag:
-            self.create_rectangle(0, 0, COL_CELLS_WIDTH, ROW_CELLS_HEIGHT, fill="green", outline="black", tags="corner")
-
-        viewport_x0, viewport_y0, xcell, ycell = self.sheet_viewport
-        if yroot == 0:
-            x1 = xroot or COL_CELLS_WIDTH
-            xcell = self.cell_containing_coords(x1, 0)[0]
-            while x1 < xroot + width:
-                x0, _, x1, _ = self.cell_coordinates(xcell, 0)
-                self.create_rectangle(x0, 0, x1, ROW_CELLS_HEIGHT, fill="green", outline="black", tags="column")
-                # Draw cell headings
-                label = self.create_text((x0 + x1) // 2, ROW_CELLS_HEIGHT // 2, text=f"Col {xcell}", fill="white")
-                self.addtag_withtag("columns_tag", label)  # Add tag for columns
-                # Draw vertical lines
-                self.create_line(x0, 0, x0, height, fill=GRID_COLOR, tags="grid_lines")
-                xcell += 1
-            xcell -= 1
-
-        if xroot == 0:
-            y1 = yroot or ROW_CELLS_HEIGHT
-            ycell = self.cell_containing_coords(0, y1)[1]
-            while y1 < yroot + height:
-                _, y0, _, y1 = self.cell_coordinates(0, ycell)
-                self.create_rectangle(0, y0, COL_CELLS_WIDTH, y1, fill="green", outline="black", tags="row")
-                # Draw row headings
-                label = self.create_text(COL_CELLS_WIDTH // 2, (y0 + y1) // 2, text=f"Row {ycell}", fill="white")
-                self.addtag_withtag("rows_tag", label)
-                # Draw horizontal lines
-                self.create_line(0, y0, width, y0, fill=GRID_COLOR, tags="grid_lines")
-                ycell += 1
-            ycell -= 1
-
-        # Draw the cells content
-        linf_x, linf_y = self.cell_containing_coords(xroot or COL_CELLS_WIDTH, yroot or ROW_CELLS_HEIGHT)
-        lsup_x, lsup_y = self.cell_containing_coords(xroot + width, yroot + height)
-        for x in range(linf_x, lsup_x + 1):
-            for y in range(linf_y, lsup_y + 1):
-                x0, y0, x1, y1 = self.cell_coordinates(x, y)
-                # Draw cell content (placeholder text)
-                self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"Cell {x},{y}", fill="black", tags="cell_content")
-        viewport_x0, viewport_y0, viewport_x1, viewport_y1 = self.sheet_viewport
-        if xroot == 0:
-            viewport_y1 = self.cell_containing_coords(0, self.winfo_height())[1]
-        if yroot == 0:
-            viewport_x1 = self.cell_containing_coords(self.winfo_width(), 0)[0]
-        self.sheet_viewport = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)
-        self.set_active_cell()
-
-    def setNewGUI(self, width, height, xroot=0, yroot=0):
-        """Sets the GUI for the worksheet with a specified width and height."""
-
         if xroot == 0 and yroot == 0:
             self.create_rectangle(0, 0, COL_CELLS_WIDTH, ROW_CELLS_HEIGHT, fill="green", outline="black", tags="corner")
             xroot, yroot = COL_CELLS_WIDTH, ROW_CELLS_HEIGHT
@@ -187,7 +135,7 @@ class SheetUI(tk.Canvas):
     def redraw_sheet(self, event):
         "Redraws the sheetui when the window is resized or needs updating."
         width, height = event.width, event.height
-        self.setNewGUI(width, height)
+        self.setGUI(width, height)
 
     def arrow_click(self, event):
         """Sets the active cell based on the arrow key pressed."""
@@ -224,7 +172,7 @@ class SheetUI(tk.Canvas):
     
     def offset_acell(self, dx, dy, isShiftPressed=False):
         acell_x0, acell_y0 = self.active_cell
-        if isShiftPressed:
+        if isShiftPressed: # Check if SHIFT is pressed
             sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
             xset = set([sel_x0, sel_x1]) - set([acell_x0])
             if len(xset) == 2:
@@ -253,7 +201,7 @@ class SheetUI(tk.Canvas):
                 dmy += dy
                 sel_y1 = max(dmy, acell_y0)
                 sel_y0 = min(dmy, acell_y0)
-        else:  # Check if SHIFT is pressed
+        else:  
             acell_x0 = max(1, acell_x0 + dx)
             acell_y0 = max(1, acell_y0 + dy)
             self.active_cell = (acell_x0, acell_y0)
@@ -277,92 +225,133 @@ class SheetUI(tk.Canvas):
         x0 = min(sel_x0, acell_x0)
         dx = dy = 0  # Initialize dx and dy for movement
         if viewport_x0 > x0:
-            # Remove items that falls beyond the right edge
-            dx = self.cell_coordinates(x0, 1)[0] - COL_CELLS_WIDTH
-            lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
-            viewport_x1, dmy = self.cell_containing_coords(width + dx, 0)
-            linf_x = self.cell_coordinates(viewport_x1, dmy)[2]
+            linf_x = self.cell_coordinates(x0, 0)[0]
+            if linf_x + width < COL_CELLS_WIDTH:
+                # We need to move the viewport to the left a distance such that any information
+                # displayed in the viewport is lost.
+                lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+                items = self.find_enclosed(COL_CELLS_WIDTH - 1, -1, lsup_x + 1, lsup_y + 1)
+                self.delete(*items)
+                viewport_x0 = x0
+                xroot = COL_CELLS_WIDTH  # Adjust root x position to account for column width
+                width = width - xroot
+            else:
+                # Remove items that falls beyond the right edge
+                dx = self.cell_coordinates(x0, 1)[0] - COL_CELLS_WIDTH
+                lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+                viewport_x1, dmy = self.cell_containing_coords(width + dx, 0)
+                linf_x = self.cell_coordinates(viewport_x1, dmy)[2]
 
-            items = self.find_enclosed(linf_x - 1, -1, lsup_x + 1, lsup_y + 1)
-            self.delete(*items)
+                items = self.find_enclosed(linf_x - 1, -1, lsup_x + 1, lsup_y + 1)
+                self.delete(*items)
 
-            # Move the viewport dx pixel to the left
-            items = self.find_enclosed(COL_CELLS_WIDTH - 1, -1, linf_x + 1, lsup_y + 1)
-            for item in items:
-                self.move(item, -dx, 0)
-            viewport_x0 = x0
-            width = -dx
-            xroot = COL_CELLS_WIDTH  # Adjust root x position to account for column width
-            self.sheet_viewport = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
-            print(COL_CELLS_WIDTH - 1, -1, linf_x + 1, lsup_y + 1)
+                # Move the viewport dx pixel to the left
+                items = self.find_enclosed(COL_CELLS_WIDTH - 1, -1, linf_x + 1, lsup_y + 1)
+                for item in items:
+                    self.move(item, -dx, 0)
+                viewport_x0 = x0
+                width = -dx
+                xroot = COL_CELLS_WIDTH  # Adjust root x position to account for column width
+                self.sheet_viewport = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
         
         x1 = max(sel_x1, acell_x0)
         if viewport_x1 <= x1:
-            # Remove items that falls beyond the right edge
-            lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
-            dx = self.cell_coordinates(x1, 2)[2] - width  + COL_CELLS_WIDTH
-            x1, dmy = self.cell_containing_coords(dx, 0)
-            linf_x = self.cell_coordinates(x1, dmy)[2]
-            dx = linf_x - COL_CELLS_WIDTH
-
-            items = self.find_enclosed(COL_CELLS_WIDTH - 1, -1, linf_x + 1, lsup_y + 1)
-            self.delete(*items)
-            # Move the viewport dx pixel to the left
-            items = self.find_enclosed(linf_x - 1, -1, lsup_x + 1, lsup_y + 1)
-            for item in items:
-                self.move(item, -dx, 0)
-            if dx < self.winfo_width() -  COL_CELLS_WIDTH:
-                viewport_x0 = self.cell_containing_coords(linf_x + 1, 0)[0]
-                xroot = lsup_x - (linf_x - COL_CELLS_WIDTH)  # Adjust root x position to account for column width
-                width = self.winfo_width() - xroot
+            lsup_x = self.cell_coordinates(x1, 0)[2]
+            if lsup_x - width > width:
+                # We need to move the viewport to the right a distance such that any information
+                # displayed in the viewport is lost.
+                lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+                items = self.find_enclosed(COL_CELLS_WIDTH - 1, -1, lsup_x + 1, lsup_y + 1)
+                self.delete(*items)
+                viewport_x0 = x0
+                xroot = COL_CELLS_WIDTH
+                width = width - xroot
             else:
-                viewport_x0 = x1
-                xroot =  COL_CELLS_WIDTH  # Reset root x position to column width
-                width = self.winfo_width() - COL_CELLS_WIDTH
+                # Remove items that falls beyond the right edge
+                lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+                dx = self.cell_coordinates(x1, 2)[2] - width  + COL_CELLS_WIDTH
+                x1, dmy = self.cell_containing_coords(dx, 0)
+                linf_x = self.cell_coordinates(x1, dmy)[2]
+                dx = linf_x - COL_CELLS_WIDTH
+
+                items = self.find_enclosed(COL_CELLS_WIDTH - 1, -1, linf_x + 1, lsup_y + 1)
+                self.delete(*items)
+                # Move the viewport dx pixel to the left
+                items = self.find_enclosed(linf_x - 1, -1, lsup_x + 1, lsup_y + 1)
+                for item in items:
+                    self.move(item, -dx, 0)
+                if dx < self.winfo_width() -  COL_CELLS_WIDTH:
+                    viewport_x0 = self.cell_containing_coords(linf_x + 1, 0)[0]
+                    xroot = lsup_x - (linf_x - COL_CELLS_WIDTH)  # Adjust root x position to account for column width
+                    width = self.winfo_width() - xroot
+                else:
+                    viewport_x0 = x1
+                    xroot =  COL_CELLS_WIDTH  # Reset root x position to column width
+                    width = self.winfo_width() - COL_CELLS_WIDTH
             self.sheet_viewport = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
 
         y0 = min(sel_y0, acell_y0)
         if viewport_y0 > y0:
-            # Remove items that falls below the bottom edge
-            dy = self.cell_coordinates(1, y0)[1] - ROW_CELLS_HEIGHT
-            lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
-            dmy, viewport_y1 = self.cell_containing_coords(0, height + dy)
-            linf_y = self.cell_coordinates(dmy, viewport_y1)[3]
+            linf_y = self.cell_coordinates(0, y0)[1]
+            if linf_y + height < ROW_CELLS_HEIGHT:
+                # We need to move the viewport to the top a distance such that any information
+                # displayed in the viewport is lost.
+                lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+                items = self.find_enclosed(-1, ROW_CELLS_HEIGHT - 1, lsup_x + 1, lsup_y + 1)
+                self.delete(*items)
+                viewport_y0 = y0
+                yroot = ROW_CELLS_HEIGHT
+                height = height - yroot
+            else:
+                # Remove items that falls below the bottom edge
+                dy = self.cell_coordinates(1, y0)[1] - ROW_CELLS_HEIGHT
+                lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+                dmy, viewport_y1 = self.cell_containing_coords(0, height + dy)
+                linf_y = self.cell_coordinates(dmy, viewport_y1)[3]
 
-            items = self.find_enclosed(-1, linf_y - 1, lsup_x + 1, lsup_y + 1)
-            self.delete(*items)
+                items = self.find_enclosed(-1, linf_y - 1, lsup_x + 1, lsup_y + 1)
+                self.delete(*items)
 
-            # Move the viewport dy pixel up
-            items = self.find_enclosed(-1, ROW_CELLS_HEIGHT - 1,  lsup_x -dx + 1, linf_y + 1)
-            for item in items:
-                self.move(item, 0, -dy)
-            viewport_y0 = y0
-            height = -dy
-            yroot = ROW_CELLS_HEIGHT  # Adjust root y position to account for row height
+                # Move the viewport dy pixel up
+                items = self.find_enclosed(-1, ROW_CELLS_HEIGHT - 1,  lsup_x -dx + 1, linf_y + 1)
+                for item in items:
+                    self.move(item, 0, -dy)
+                viewport_y0 = y0
+                height = -dy
+                yroot = ROW_CELLS_HEIGHT  # Adjust root y position to account for row height
             self.sheet_viewport = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
-            print(-1, ROW_CELLS_HEIGHT - 1, lsup_x + 1, linf_y + 1)
         
         y1 = max(sel_y1, acell_y0)
         if viewport_y1 <= y1:
-            # Remove items that falls below the bottom edge
-            lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
-            dy = self.cell_coordinates(1, y1)[3] - height + ROW_CELLS_HEIGHT
-            dmy, viewport_y1 = self.cell_containing_coords(0, dy)
-            linf_y = self.cell_coordinates(dmy, viewport_y1)[3]
-            dy = linf_y - ROW_CELLS_HEIGHT
+            lsup_y = self.cell_coordinates(0, y1)[3]
+            if lsup_y - height > height:
+                # We need to move the viewport to the bottom a distance such that any information
+                # displayed in the viewport is lost.
+                lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+                items = self.find_enclosed(-1, ROW_CELLS_HEIGHT - 1, lsup_x + 1, lsup_y + 1)
+                self.delete(*items)
+                viewport_y0 = y0
+                yroot = ROW_CELLS_HEIGHT
+                height = height - yroot
+            else:
+                # Remove items that falls below the bottom edge
+                lsup_x, lsup_y = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+                dy = self.cell_coordinates(1, y1)[3] - height + ROW_CELLS_HEIGHT
+                dmy, viewport_y1 = self.cell_containing_coords(0, dy)
+                linf_y = self.cell_coordinates(dmy, viewport_y1)[3]
+                dy = linf_y - ROW_CELLS_HEIGHT
 
-            items = self.find_enclosed(-1, ROW_CELLS_HEIGHT - 1, lsup_x + 1, linf_y + 1)
-            self.delete(*items)
-            # Move the viewport dy pixel up
-            items = self.find_enclosed(-1, linf_y - 1, lsup_x + 1, lsup_y + 1)
-            for item in items:
-                self.move(item, 0, -dy)
-            viewport_y0 = self.cell_containing_coords(0, linf_y + 1)[1]
-            yroot = lsup_y - (linf_y - ROW_CELLS_HEIGHT)
+                items = self.find_enclosed(-1, ROW_CELLS_HEIGHT - 1, lsup_x + 1, linf_y + 1)
+                self.delete(*items)
+                # Move the viewport dy pixel up
+                items = self.find_enclosed(-1, linf_y - 1, lsup_x + 1, lsup_y + 1)
+                for item in items:
+                    self.move(item, 0, -dy)
+                viewport_y0 = self.cell_containing_coords(0, linf_y + 1)[1]
+                yroot = lsup_y - (linf_y - ROW_CELLS_HEIGHT)
             self.sheet_viewport = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
-
         if dx or dy:
-            self.setNewGUI(width, height, xroot, yroot)  # Redraw the sheet with the new viewport
+            self.setGUI(width, height, xroot, yroot)  # Redraw the sheet with the new viewport
         print(f"Viewport set to: {self.sheet_viewport}, Active cell: {self.active_cell}, Selected cells: {self.selected_cells}")
 
     def mouse_click(self, event):
