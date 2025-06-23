@@ -107,8 +107,12 @@ class SheetUI(tk.Canvas):
         return (x0, y0, x0 + CELL_WIDTH, y0 + CELL_HEIGHT)
     
     def area_coordinates(self, x0, y0, x1, y1):
-        sel_x0, sel_y0 = self.cell_coordinates(x0, y0)[:2]
-        sel_x1, sel_y1 = self.cell_coordinates(x1, y1)[2:]
+        nquadrant = self.cell_quadrant(x0, y0, isCoord=False)
+        orig, coords_orig = self.quadrant_data(nquadrant)
+        sel_x0, sel_y0 = self.cell_coordinates(x0, y0, orig, coords_orig)[:2]
+        nquadrant = self.cell_quadrant(x1, y1, isCoord=False)
+        orig, coords_orig = self.quadrant_data(nquadrant)
+        sel_x1, sel_y1 = self.cell_coordinates(x1, y1, orig, coords_orig)[2:]
         return (sel_x0, sel_y0, sel_x1, sel_y1)
     
     def cell_containing_coords(self, x, y, viewport=None, coords_viewport=None):
@@ -120,6 +124,18 @@ class SheetUI(tk.Canvas):
         xcell = max(1, min(MAX_COLS, xcell))
         ycell = max(1, min(MAX_ROWS, ycell))
         return (xcell, ycell)
+    
+    def cell_quadrant(self, x: int, y:int, isCoord: bool=True) -> int:
+        """Returns the quadrant of the cell containing the given x and y screen coordinates."""
+        xdiscr = self.coords_vportq3[0] if isCoord else self.viewport_q3[2]
+        ydiscr = self.coords_vportq3[1] if isCoord else self.viewport_q3[3]
+        if x >= xdiscr and y >= ydiscr:
+            return 1
+        if x < xdiscr and y >= ydiscr:
+            return 2
+        if x < xdiscr and y < ydiscr:
+            return 3
+        return 4
     
     def quadrant_data(self, nquadrant):
         """Returns the (vieport, coords_viewport) for the given quadrant."""
@@ -244,7 +260,8 @@ class SheetUI(tk.Canvas):
                         # Draw cell content (placeholder text)
                         self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"Q2_C{x}R{y}", fill="black", tags="cell_content")
 
-              # Cuarto cuadrante
+                # Primer cuadrante
+                orig, coords_orig =  self.quadrant_data(1)
                 for x in range(xmin, xmax + 1):
                     for y in range(viewport_y0, viewport_y1 + 1):
                         x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
@@ -381,8 +398,8 @@ class SheetUI(tk.Canvas):
             if isCtrlPressed:
                 dx = dx * ((pivot.x - 1) if dx < 0 else (MAX_COLS - pivot.x))
                 dy = dy * ((pivot.y - 1) if dy < 0 else (MAX_ROWS - pivot.y))
-            pivot.x = max(self.viewport_q3[2], min(MAX_COLS, pivot.x + dx))
-            pivot.y = max(self.viewport_q3[3], min(MAX_ROWS, pivot.y + dy))
+            pivot.x = max(self.viewport_q3[0], min(MAX_COLS, pivot.x + dx))
+            pivot.y = max(self.viewport_q3[1], min(MAX_ROWS, pivot.y + dy))
             xin, yin = pivot.x, pivot.y
         self.show_cell(xin, yin)
 
@@ -394,7 +411,13 @@ class SheetUI(tk.Canvas):
         winfo_width, winfo_height = self.winfo_width(), self.winfo_height()
         x = max(1, min(MAX_COLS, x))
         y = max(1, min(MAX_ROWS, y))
-        # x, y = self.cell_containing_coords(deltax + COL_CELLS_WIDTH, deltay + ROW_CELLS_HEIGHT)
+        nquadrant = self.cell_quadrant(x, y, isCoord=False)
+        if nquadrant == 3:
+            return
+        elif nquadrant == 2:
+            y = viewport_y0
+        elif nquadrant == 4:
+            x = viewport_x0
         linf_x, linf_y = self.cell_coordinates(x, y)[:2]
         deltax, deltay = linf_x - self.coords_vportq1[0], linf_y - self.coords_vportq1[1]
         dx = dy = 0
@@ -555,7 +578,9 @@ class SheetUI(tk.Canvas):
             else:
                 print("Clicked on the row header")
             return "break"
-        clk_x, clk_y = self.cell_containing_coords(event.x, event.y)
+        nquadrant = self.cell_quadrant(event.x, event.y)
+        orig, coords_orig = self.quadrant_data(nquadrant)
+        clk_x, clk_y = self.cell_containing_coords(event.x, event.y, orig, coords_orig)
         with self.pivot_point(isActiveCell=not event.state & SHIFT_PRESSED) as pivot:
             pivot.x = clk_x
             pivot.y = clk_y
@@ -604,7 +629,7 @@ class SheetUI(tk.Canvas):
                 y0, y1 = min(lsup_y, max(linf_y, y0)), max(linf_y, min(y1, lsup_y))
             return x0, y0, x1, y1
         self.delete("selected_cells")
-        clipping_rect = (self.coords_vportq1[0], self.coords_vportq1[1], self.winfo_width(), self.winfo_height())
+        clipping_rect = (self.coords_vportq3[0], self.coords_vportq3[1], self.winfo_width(), self.winfo_height())
 
         x0, y0, x1, y1 = self.area_coordinates(*self.selected_cells)
         sel_x0, sel_y0, sel_x1, sel_y1 = clip_rectangle(x0, y0, x1, y1, clipping_rect)
@@ -616,7 +641,9 @@ class SheetUI(tk.Canvas):
 
         self.delete("active_cell")
         """Draws the active cell rectangle."""
-        x0, y0, x1, y1 = self.cell_coordinates(*self.active_cell)
+        nquadrant = self.cell_quadrant(*self.active_cell, isCoord=False)
+        orig, coords_orig = self.quadrant_data(nquadrant)
+        x0, y0, x1, y1 = self.cell_coordinates(*self.active_cell, orig, coords_orig)
         x0, y0, x1, y1 = clip_rectangle(x0, y0, x1, y1, clipping_rect)
         self.create_rectangle(
             x0, y0, x1, y1, 
@@ -629,7 +656,7 @@ class SheetUI(tk.Canvas):
 
         # change color for col_selected and row_selected
         old_selected = self.find_withtag("row_selected")
-        new_selected = [srow for srow in self.find_enclosed(-1, sel_y0 - 1, self.coords_vportq1[0] + 1, sel_y1 + 1) if self.type(srow) == "rectangle"]
+        new_selected = [srow for srow in self.find_enclosed(-1, sel_y0 - 1, self.coords_vportq3[0] + 1, sel_y1 + 1) if self.type(srow) == "rectangle"]
         to_remove = set(old_selected) - set(new_selected)
         for row_id in to_remove:
             self.dtag(row_id, "row_selected")
@@ -639,7 +666,7 @@ class SheetUI(tk.Canvas):
             self.addtag_withtag("row_selected", row_id)
             self.itemconfigure(row_id, fill="blue")
         old_selected = self.find_withtag("col_selected")
-        new_selected = [scol for scol in self.find_enclosed(sel_x0 - 1, -1, sel_x1 + 1, self.coords_vportq1[1] + 1) if self.type(scol) == "rectangle"]
+        new_selected = [scol for scol in self.find_enclosed(sel_x0 - 1, -1, sel_x1 + 1, self.coords_vportq3[1] + 1) if self.type(scol) == "rectangle"]
         to_remove = set(old_selected) - set(new_selected)
         for col_id in to_remove:
             self.dtag(col_id, "col_selected")
