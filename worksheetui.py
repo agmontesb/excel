@@ -30,9 +30,12 @@ class SheetUI(tk.Canvas):
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
         self.coords_vportq3 = (COL_CELLS_WIDTH, ROW_CELLS_HEIGHT)
-        self.viewport_q3 = (2, 3, 4, 6)
-        self.coords_vportq1 = (COL_CELLS_WIDTH + 2 * CELL_WIDTH, ROW_CELLS_HEIGHT + 3 * CELL_HEIGHT)
-        self.viewport_q1 = (4, 6, 4, 6)  # Default pivot cell
+        # self.viewport_q3 = (2, 3, 4, 6)
+        self.viewport_q3 = (1, 1, 1, 1)
+        # self.coords_vportq1 = (COL_CELLS_WIDTH + 2 * CELL_WIDTH, ROW_CELLS_HEIGHT + 3 * CELL_HEIGHT)
+        self.coords_vportq1 = COL_CELLS_WIDTH, ROW_CELLS_HEIGHT
+        # self.viewport_q1 = (4, 6, 4, 6)  # Default pivot cell
+        self.viewport_q1 = (1, 1, 1, 1)  # Default pivot cell
         self.active_cell = self.viewport_q1[:2]  # Variable to store the active cell
         self.selected_cells = (*self.active_cell, *self.active_cell)  # Variable to store the selected cell
         self.bind("<Configure>", self.redraw_sheet)
@@ -46,6 +49,7 @@ class SheetUI(tk.Canvas):
         self.bind("<Left>", self.arrow_click)
         self.bind("<Right>", self.arrow_click)
         self.bind("<Return>", self.arrow_click)
+        self.bind("<Home>", self.arrow_click)
         self.bind("<Prior>", self.arrow_click)
         self.bind("<Next>", self.arrow_click)
         # self.bind("<Key>", self.arrow_click)
@@ -127,11 +131,11 @@ class SheetUI(tk.Canvas):
     
     def cell_quadrant(self, x: int, y:int, isCoord: bool=True) -> int:
         """Returns the quadrant of the cell containing the given x and y screen coordinates."""
-        xdiscr = self.coords_vportq3[0] if isCoord else self.viewport_q3[2]
-        ydiscr = self.coords_vportq3[1] if isCoord else self.viewport_q3[3]
+        xdiscr = self.coords_vportq1[0] if isCoord else self.viewport_q3[2]
+        ydiscr = self.coords_vportq1[1] if isCoord else self.viewport_q3[3]
         if x >= xdiscr and y >= ydiscr:
             return 1
-        if x < xdiscr and y >= ydiscr:
+        if x >= xdiscr and y <= ydiscr:
             return 2
         if x < xdiscr and y < ydiscr:
             return 3
@@ -147,7 +151,7 @@ class SheetUI(tk.Canvas):
         elif nquadrant == 3:
             return self.viewport_q3, self.coords_vportq3
         else:
-            orig = self.viewport_q3[0], self.viewport_q1[1], self.viewport_q3[1], self.viewport_q1[3]
+            orig = self.viewport_q3[0], self.viewport_q1[1], self.viewport_q3[2], self.viewport_q1[3]
             return orig, (self.coords_vportq3[0], self.coords_vportq1[1])
     
     def setGUI(self):
@@ -273,16 +277,16 @@ class SheetUI(tk.Canvas):
             orig, coords_orig =  self.quadrant_data(4)
             orig_x0, orig_y0, orig_x1, orig_y1 = orig
             if linf_y <= orig_y1 and lsup_y >= orig_y0:
-                ymin, ymax = max(linf_y, orig_y0), min(lsup_y, orig_y1)
+                ymin, ymax = max(linf_y, orig_y0), min(lsup_y  + 1, orig_y1)
                 for y in range(ymin, ymax + 1):
-                    for x in range(orig_x0, orig_x1 + 1):
+                    for x in range(orig_x0, orig_x1):
                         x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
                         # Draw cell content (placeholder text)
                         self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"Q4_C{x}R{y}", fill="black", tags="cell_content")
                 # Primer cuadrante
                 for y in range(ymin, ymax + 1):
                     for x in range(viewport_x0, viewport_x1 + 1):
-                        x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
+                        x0, y0, x1, y1 = self.cell_coordinates(x, y)
                         # Draw cell content (placeholder text)
                         self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"C{x}R{y}", fill="black", tags="cell_content")
 
@@ -300,7 +304,7 @@ class SheetUI(tk.Canvas):
             orig_x0, orig_y0, orig_x1, orig_y1 = orig
             ymin, ymax = max(linf_y, orig_y0), min(lsup_y, orig_y1)
             for y in range(ymin, ymax + 1):
-                for x in range(orig_x0, orig_x1 + 1):
+                for x in range(orig_x0, orig_x1):
                     x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
                     # Draw cell content (placeholder text)
                     self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"Q4_C{x}R{y}", fill="black", tags="cell_content")
@@ -320,6 +324,17 @@ class SheetUI(tk.Canvas):
 
         # Update the viewport
         self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)
+        self.set_freeze_lines()
+
+    def set_freeze_lines(self):
+        coord_acell_x, coord_acell_y = self.coords_vportq1
+        items = self.find_withtag("freeze_line")
+        if not items and coord_acell_y != self.coords_vportq3[1]:
+            self.create_line(-COL_CELLS_WIDTH, coord_acell_y, self.winfo_width(), coord_acell_y, fill="black", tags="freeze_line")
+        
+        if not items and coord_acell_x != self.coords_vportq3[0]:
+            self.create_line(coord_acell_x, -ROW_CELLS_HEIGHT, coord_acell_x, self.winfo_height(), fill="black", tags="freeze_line")
+
 
     def redraw_sheet(self, event):
         "Redraws the sheetui when the window is resized or needs updating."
@@ -335,14 +350,29 @@ class SheetUI(tk.Canvas):
     def arrow_click(self, event):
         """Sets the active cell based on the arrow key pressed."""
         # print(f'{event.keysym} pressed')
-        
-        if event.keysym in ("Next", "Prior"):
+
+        if event.keysym == "Home":
+            isCtrlPressed = event.state & CTRL_PRESSED
+            isShiftPressed = event.state & SHIFT_PRESSED
+            viewport_x0, viewport_y0 = self.viewport_q1[:2]
+            with self.pivot_point(isActiveCell=not isShiftPressed) as pivot:
+                pivot.x = viewport_x0 = self.viewport_q3[2]
+                if isCtrlPressed:
+                    viewport_y0 = self.viewport_q3[3]
+                    pivot.y = viewport_y0 
+            self.move_viewport(viewport_x0, viewport_y0)
+            self.set_active_cell()
+            return "break"
+        elif event.keysym in ("Next", "Prior"):
             viewport_x0, viewport_y0, viewport_x1, viewport_y1 = self.viewport_q1
             winfo_width, winfo_height = self.winfo_width(), self.winfo_height()
             acell_x0, acell_y0 = self.active_cell
             with self.pivot_point(isActiveCell=not event.state & SHIFT_PRESSED) as pivot:
                 coord_pivot_x, coord_pivot_y = self.cell_coordinates(pivot.x, pivot.y)[:2]
+                nquadrant = self.cell_quadrant(pivot.x, pivot.y, isCoord=False)
                 if event.state & ALT_PRESSED:
+                    if nquadrant in (4, 3):
+                        coord_pivot_x = self.coords_vportq1[0]
                     if event.keysym == "Next":
                         viewport_x0 = viewport_x1 if viewport_x1 < MAX_COLS else viewport_x0
                     else:
@@ -350,6 +380,8 @@ class SheetUI(tk.Canvas):
                         viewport_x0 = self.cell_containing_coords(xright - (winfo_width - COL_CELLS_WIDTH), 0)[0]
                         viewport_x0 = min(MAX_COLS, max(1, viewport_x0))
                 else:
+                    if nquadrant in (2, 3):
+                        coord_pivot_y = self.coords_vportq1[1]
                     if event.keysym == "Next":
                         viewport_y0 = viewport_y1 if viewport_x1 < MAX_ROWS else viewport_y0
                     else:
@@ -398,10 +430,21 @@ class SheetUI(tk.Canvas):
             if isCtrlPressed:
                 dx = dx * ((pivot.x - 1) if dx < 0 else (MAX_COLS - pivot.x))
                 dy = dy * ((pivot.y - 1) if dy < 0 else (MAX_ROWS - pivot.y))
-            pivot.x = max(self.viewport_q3[0], min(MAX_COLS, pivot.x + dx))
-            pivot.y = max(self.viewport_q3[1], min(MAX_ROWS, pivot.y + dy))
+            nquadrant = self.cell_quadrant(pivot.x, pivot.y, isCoord=False)
+            # linf_x, linf_y = (self.viewport_q3[2], self.viewport_q3[3]) if nquadrant == 1 else (self.viewport_q3[0], self.viewport_q3[1])
+            linf_x, linf_y = 1, 1
+            pivot.x = max(linf_x, min(MAX_COLS, pivot.x + dx))
+            pivot.y = max(linf_y, min(MAX_ROWS, pivot.y + dy))
             xin, yin = pivot.x, pivot.y
+        nquadrant = self.cell_quadrant(xin, yin, isCoord=False)
+        if nquadrant == 2:
+            yin = self.viewport_q1[1]
+        elif nquadrant == 3:
+            xin, yin = self.viewport_q1[0], self.viewport_q1[1]
+        elif nquadrant == 4:
+            xin = self.viewport_q1[0]
         self.show_cell(xin, yin)
+        self.set_active_cell()
 
     def move_viewport(self, x, y):
         """
@@ -411,13 +454,6 @@ class SheetUI(tk.Canvas):
         winfo_width, winfo_height = self.winfo_width(), self.winfo_height()
         x = max(1, min(MAX_COLS, x))
         y = max(1, min(MAX_ROWS, y))
-        nquadrant = self.cell_quadrant(x, y, isCoord=False)
-        if nquadrant == 3:
-            return
-        elif nquadrant == 2:
-            y = viewport_y0
-        elif nquadrant == 4:
-            x = viewport_x0
         linf_x, linf_y = self.cell_coordinates(x, y)[:2]
         deltax, deltay = linf_x - self.coords_vportq1[0], linf_y - self.coords_vportq1[1]
         dx = dy = 0
@@ -529,8 +565,8 @@ class SheetUI(tk.Canvas):
                 pass
             self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
             self.setGUI()  # Redraw the sheet with the new viewport
+            self.tag_raise("freeze_line")  # Move freeze_line above all tags
             pass
-        self.set_active_cell()
 
     def show_cell(self, xin, yin):
         winfo_width, winfo_height = self.winfo_width(), self.winfo_height()
@@ -557,8 +593,10 @@ class SheetUI(tk.Canvas):
         """Sets the active cell based on the click position."""
         if event.x < COL_CELLS_WIDTH or event.y < ROW_CELLS_HEIGHT:
             if event.x < COL_CELLS_WIDTH and event.y < ROW_CELLS_HEIGHT:
-                test = 'show_cell'
-                if test == 'show_cell':
+                test = 'freeze_panes'
+                if test == 'freeze_panes':
+                    msg1 = "Enter the pivot cell coordinates (col, row):"
+                elif test == 'show_cell':
                     msg1 = "Enter the pivot cell coordinates (col, row):"
                 elif test == "move_viewport":
                     msg1 = "Enter the pivot cell coordinates (delta_col, delta_row):"
@@ -619,7 +657,22 @@ class SheetUI(tk.Canvas):
 
     def mouse_release(self, event):
         pass
-    
+
+    def freeze_panes(self, *args):
+        if self.viewport_q3 == (1, 1, 1, 1):
+            self.coords_vportq1 = coord_acell_x, coord_acell_y = self.cell_coordinates(*self.active_cell)[:2]
+            self.viewport_q3 = (*self.viewport_q1[:2], *self.active_cell)
+            self.viewport_q1 = *self.active_cell, *self.viewport_q1[2:]
+
+            self.set_freeze_lines()
+        else:
+            self.move_viewport(*self.viewport_q3[2:])
+            self.coords_vportq1 = self.coords_vportq3
+            self.viewport_q1 = *self.viewport_q3[:2], *self.viewport_q1[2:]
+            self.viewport_q3 = 1, 1, 1, 1
+            items = self.find_withtag("freeze_line")
+            self.delete(*items)
+
     def set_active_cell(self):
         # Set the tag "selected" for the region in coords (40, CELL_HEIGHT, 40 + 5*CELL_WIDTH, CELL_HEIGHT + 5*CELL_HEIGHT) rectangle
         def clip_rectangle(x0, y0, x1, y1, clipping_rgn=None):
