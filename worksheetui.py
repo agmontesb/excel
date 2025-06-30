@@ -3,14 +3,19 @@
     que consiste en un área de celdas y una barra de estado que permite cambiar a otras hojas de trabajo '
     además de la activa'
 '''
-
+import re
 import tkinter as tk
 from tkinter import ttk
 from tkinter import simpledialog
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import logging
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Constants for key states
 SHIFT_PRESSED = 0x00001
 CTRL_PRESSED = 0x00004
 ALT_PRESSED = 0x20000
@@ -26,6 +31,18 @@ CELL_HEIGHT = ROW_CELLS_HEIGHT  # Default height for cells in the worksheet
 GRID_COLOR = "lightgray"  # Default grid color for the worksheet
 
 
+def cell_content_gen(nquadrant: int, x: int, y: int) -> str:
+    """Generates the content for a cell based on its quadrant and cell coordinates."""
+    if nquadrant == 1:
+        return f"C{x}R{y}"
+    elif nquadrant == 2:
+        return f"Q2_C{x}R{y}"
+    elif nquadrant == 3:
+        return f"Q3_C{x}R{y}"
+    else:
+        return f"Q4_C{x}R{y}"
+
+
 class SheetUI(tk.Canvas):
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
@@ -33,11 +50,22 @@ class SheetUI(tk.Canvas):
         # self.viewport_q3 = (2, 3, 4, 6)
         self.viewport_q3 = (1, 1, 1, 1)
         # self.coords_vportq1 = (COL_CELLS_WIDTH + 2 * CELL_WIDTH, ROW_CELLS_HEIGHT + 3 * CELL_HEIGHT)
-        self.coords_vportq1 = COL_CELLS_WIDTH, ROW_CELLS_HEIGHT
+        self.coords_vportq1 = self.coords_vportq3
         # self.viewport_q1 = (4, 6, 4, 6)  # Default pivot cell
         self.viewport_q1 = (1, 1, 1, 1)  # Default pivot cell
         self.active_cell = self.viewport_q1[:2]  # Variable to store the active cell
         self.selected_cells = (*self.active_cell, *self.active_cell)  # Variable to store the selected cell
+        self.cell_content = cell_content_gen
+
+        #flags
+        self.f_drag = False  # Flag to indicate if a mouse drag is in progress
+        self.f_gridlines = True  # Flag to indicate if gridlines are visible
+        self.f_headings = True  # Flag to indicate if headings are visible
+
+
+        self.error_report = ''
+
+
         self.bind("<Configure>", self.redraw_sheet)
         self.bind("<Button-1>", self.mouse_click)
         self.bind("<B1-Motion>", self.mouse_drag)
@@ -53,7 +81,6 @@ class SheetUI(tk.Canvas):
         self.bind("<Prior>", self.arrow_click)
         self.bind("<Next>", self.arrow_click)
         # self.bind("<Key>", self.arrow_click)
-
         self.focus_set()  # Set focus to the canvas
 
     @contextmanager
@@ -80,6 +107,7 @@ class SheetUI(tk.Canvas):
         if isActiveCell:
             self.active_cell = pt.x, pt.y
             self.selected_cells = (*self.active_cell, *self.active_cell)
+            self.event_generate("<<ActiveCellChanged>>")
         else:
             acell_x0, acell_y0 = self.active_cell
 
@@ -101,6 +129,17 @@ class SheetUI(tk.Canvas):
                 else:
                     sel_y1 = max(acell_y0, pt.y)
             self.selected_cells = sel_x0, sel_y0, sel_x1, sel_y1
+            self.event_generate("<<SelectedCellsChanged>>")
+
+    def draw_cell_content(self, box: tuple[int, int, int, int], cell_content:str, **kwargs):
+        x0, y0, x1, y1 = box
+        items = [item for item in self.find_enclosed(x0, y0, x1, y1) if self.type(item) == "text"]
+        if items:
+            old_txt = self.itemcget(items[0], "text")
+            print(f"replacing {old_txt} with {cell_content}")
+            self.error_report += f" {old_txt}"
+        self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=cell_content, **kwargs)
+
 
     def cell_coordinates(self, x, y, viewport=None, coords_viewport=None):
         """Calculates the coordinates of the cell based on the x and y position."""
@@ -157,9 +196,15 @@ class SheetUI(tk.Canvas):
     def setGUI(self):
         """Sets the GUI for the worksheet with a specified width and height."""
 
+        lsup_coordx, lsup_coordy = self.cell_coordinates(*self.viewport_q1[2:])[2:]
+        lsup_coordx = min(self.winfo_width(), lsup_coordx)
+        lsup_coordy = min(self.winfo_height(), lsup_coordy)
+        self.delete("background")
+        self.create_rectangle(0, 0, lsup_coordx, lsup_coordy, fill="white", outline=GRID_COLOR, tags="background")
+        self.tag_lower("background")  # Ensure the background is at the bottom of the stack
         # Determine the areas that needs redraw
         items = sorted(self.find_withtag("column"), key=lambda x: self.coords(x)[0])
-        dmy0 = dmy1 = COL_CELLS_WIDTH
+        dmy0 = dmy1 = self.coords_vportq3[0]
         ndx = 0
         while ndx < len(items):
             dmy, _, dmy1, _ = self.coords(items[ndx])
@@ -170,12 +215,12 @@ class SheetUI(tk.Canvas):
             ndx += 1
             dmy0 = dmy1
         else:
-            xroot = 0 if dmy1 >= self.winfo_width() else dmy1
-            width = self.winfo_width() - xroot
+            xroot = (self.coords_vportq3[0] - COL_CELLS_WIDTH) if dmy1 >= lsup_coordx else dmy1
+            width = lsup_coordx - xroot
         xroot_in = xroot
 
         items = sorted(self.find_withtag("row"), key=lambda x: self.coords(x)[1])
-        dmy0 = dmy1 = ROW_CELLS_HEIGHT
+        dmy0 = dmy1 = self.coords_vportq3[1]
         ndx = 0
         while ndx < len(items):
             _, dmy, _, dmy1 = self.coords(items[ndx])
@@ -186,16 +231,16 @@ class SheetUI(tk.Canvas):
             ndx += 1
             dmy0 = dmy1
         else:
-            yroot = 0 if dmy1 >= self.winfo_height() else dmy1
-            height = self.winfo_height() - yroot
+            yroot = (self.coords_vportq3[1] - ROW_CELLS_HEIGHT) if dmy1 >= lsup_coordy else dmy1
+            height = lsup_coordy - yroot
         yroot_in = yroot
 
         # We secure that the parameters are all integers
         xroot, width, yroot, height = map(int, (xroot, width, yroot, height))
-        
+        linf_x, linf_y, lsup_x, lsup_y = self.viewport_q1
         viewport_x0, viewport_y0, xcell, ycell = self.viewport_q1
-        if xroot > 0:
-            winfo_height = self.winfo_height()
+        if xroot >= self.coords_vportq3[0]:
+            # winfo_height = self.winfo_height()
             if xroot == self.coords_vportq3[0]:
                 pane_width = self.coords_vportq1[0] - self.coords_vportq3[0]
                 task = [
@@ -205,23 +250,24 @@ class SheetUI(tk.Canvas):
             else:
                 task = [(xroot, width, None, None)]
             while task:
-                xroot, width, orig, coords_orig = task.pop()
-                x1 = xroot
+                root_x, width, orig, coords_orig = task.pop()
+                x1 = root_x
                 xcell = linf_x = self.cell_containing_coords(x1, 0, orig, coords_orig)[0]
-                while (x1 < xroot + width) and xcell <= MAX_COLS:
-                    x0, _, x1, _ = self.cell_coordinates(xcell, 0)
-                    self.create_rectangle(x0, 0, x1, ROW_CELLS_HEIGHT, fill="green", outline="black", tags="column")
+                while (x1 < root_x + width) and xcell <= MAX_COLS:
+                    x0, _, x1, _ = self.cell_coordinates(xcell, 0, orig, coords_orig)
+                    y0, y1 = self.coords_vportq3[1] - ROW_CELLS_HEIGHT, self.coords_vportq3[1]
+                    self.create_rectangle(x0, y0, x1, y1, fill="green", outline="black", tags="column")
                     # Draw cell headings
-                    label = self.create_text((x0 + x1) // 2, ROW_CELLS_HEIGHT // 2, text=f"C{xcell}", fill="white")
+                    label = self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"C{xcell}", fill="white")
                     self.addtag_withtag("columns_tag", label)  # Add tag for columns
                     # Draw vertical lines
-                    self.create_line(x0, 0, x0, winfo_height, fill=GRID_COLOR, tags="grid_lines")
+                    self.create_line(x1, y1, x1, self.winfo_height(), fill=GRID_COLOR, tags="grid_lines")
                     xcell += 1
                 lsup_x = xcell - 1
             print(f"printed columns from {linf_x} to {lsup_x}")
 
-        if yroot > 0:
-            winfo_width = self.winfo_width()
+        if yroot >= self.coords_vportq3[1]:
+            # winfo_width = self.winfo_width()
             if yroot == self.coords_vportq3[1]:
                 pane_height = self.coords_vportq1[1] - self.coords_vportq3[1]
                 task = [
@@ -232,99 +278,130 @@ class SheetUI(tk.Canvas):
                 task = [(yroot, height, None, None)]
 
             while task:
-                yroot, height, orig, coords_orig = task.pop()
-                y1 = yroot
+                root_y, height, orig, coords_orig = task.pop()
+                y1 = root_y
                 ycell = linf_y = self.cell_containing_coords(0, y1, orig, coords_orig)[1]
-                while (y1 < yroot + height) and ycell <= MAX_ROWS:
-                    _, y0, _, y1 = self.cell_coordinates(0, ycell)
-                    self.create_rectangle(0, y0, COL_CELLS_WIDTH, y1, fill="green", outline="black", tags="row")
+                while (y1 < root_y + height) and ycell <= MAX_ROWS:
+                    x0, x1 = self.coords_vportq3[0] - COL_CELLS_WIDTH, self.coords_vportq3[0]
+                    _, y0, _, y1 = self.cell_coordinates(0, ycell, orig, coords_orig)
+                    self.create_rectangle(x0, y0, x1, y1, fill="green", outline="black", tags="row")
                     # Draw cell headings
-                    label = self.create_text(COL_CELLS_WIDTH // 2, (y0 + y1) // 2, text=f"C{ycell}", fill="white")
+                    label = self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"R{ycell}", fill="white")
                     self.addtag_withtag("rows_tag", label)  # Add tag for columns
                     # Draw Horizontal lines
-                    self.create_line(0, y0, winfo_width, y0, fill=GRID_COLOR, tags="grid_lines")
+                    self.create_line(x1, y1, self.winfo_width(), y1, fill=GRID_COLOR, tags="grid_lines")
                     ycell += 1
                 lsup_y = ycell - 1
+            print(f"printed rows from {linf_y} to {lsup_y}")
 
         viewport_x0, viewport_y0 = self.cell_containing_coords(*self.coords_vportq1)
         viewport_x1, viewport_y1 = self.cell_containing_coords(self.winfo_width(), self.winfo_height())
 
 
         # Draw the cells content
-        if xroot > 0:
+        print(f"{xroot_in=}, {yroot_in=}")
+        if xroot > self.coords_vportq1[0]:
             # Segundo cuadrante
-            # print(f"redrawing cells from 2 scnd cuadrant ({viewport_x0}, {linf_y}, {viewport_x1}, {lsup_y})")
-            orig, coords_orig =  self.quadrant_data(2)
+            if yroot <= self.coords_vportq1[1]:
+                orig, coords_orig =  self.quadrant_data(2)
+                orig_x0, orig_y0, orig_x1, orig_y1 = orig
+                if orig_y0 < orig_y1:
+                    xmin, xmax = max(linf_x, orig_x0), min(lsup_x, orig_x1)
+                    for x in range(xmin, xmax + 1):
+                        for y in range(orig_y0, orig_y1):
+                            x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
+                            # Draw cell content (placeholder text)
+                            cell_content = self.cell_content(2, x, y)
+                            self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
+                    print(f"(xroot > {self.coords_vportq1[0]}) printed cells from {(xmin, xmax)} to {(orig_y0, orig_y1)} in quadrant 2")
+
+            # Primer cuadrante
+            orig, coords_orig =  self.quadrant_data(1)
             orig_x0, orig_y0, orig_x1, orig_y1 = orig
-            if linf_x <= orig_x1 and lsup_x >= orig_x0:
-                xmin, xmax = max(linf_x, orig_x0), min(lsup_x, orig_x1)
-                for x in range(xmin, xmax + 1):
-                    for y in range(orig_y0, orig_y1):
-                        x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
-                        # Draw cell content (placeholder text)
-                        self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"Q2_C{x}R{y}", fill="black", tags="cell_content")
-
-                # Primer cuadrante
-                orig, coords_orig =  self.quadrant_data(1)
-                for x in range(xmin, xmax + 1):
-                    for y in range(viewport_y0, viewport_y1 + 1):
-                        x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
-                        # Draw cell content (placeholder text)
-                        self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"C{x}R{y}", fill="black", tags="cell_content")
-
-        if xroot == 0:
-            # Cuarto cuadrante
-            orig, coords_orig =  self.quadrant_data(4)
+            xmin, xmax = max(linf_x, orig_x0), min(lsup_x, orig_x1)
+            for x in range(xmin, xmax + 1):
+                for y in range(linf_y, lsup_y + 1):
+                    x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
+                    # Draw cell content (placeholder text)
+                    cell_content = self.cell_content(1, x, y)
+                    self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
+            print(f"(xroot > {self.coords_vportq1[0]}) printed cells from {(xmin, xmax)} to {(linf_y, lsup_y)} in quadrant 1")
+            
+        if xroot == self.coords_vportq1[0]:
+            if yroot >= self.coords_vportq1[1]:
+                # Cuarto cuadrante
+                orig, coords_orig =  self.quadrant_data(4)
+                orig_x0, orig_y0, orig_x1, orig_y1 = orig
+                ymin, ymax = max(linf_y, orig_y0), min(lsup_y, orig_y1)
+                if orig_x1 > orig_x0:
+                    for y in range(ymin, ymax + 1):
+                        for x in range(orig_x0, orig_x1):
+                            x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
+                            # Draw cell content (placeholder text)
+                            cell_content = self.cell_content(4, x, y)
+                            self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
+                    print(f"(xroot == {self.coords_vportq1[0]}) printed cells from {(orig_x0, orig_x1 - 1)} to {(ymin, ymax)} in quadrant 4")
+            # Primer cuadrante
+            orig, coords_orig =  self.quadrant_data(1)
             orig_x0, orig_y0, orig_x1, orig_y1 = orig
-            if linf_y <= orig_y1 and lsup_y >= orig_y0:
-                ymin, ymax = max(linf_y, orig_y0), min(lsup_y  + 1, orig_y1)
-                for y in range(ymin, ymax + 1):
-                    for x in range(orig_x0, orig_x1):
-                        x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
-                        # Draw cell content (placeholder text)
-                        self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"Q4_C{x}R{y}", fill="black", tags="cell_content")
-                # Primer cuadrante
-                for y in range(ymin, ymax + 1):
-                    for x in range(viewport_x0, viewport_x1 + 1):
-                        x0, y0, x1, y1 = self.cell_coordinates(x, y)
-                        # Draw cell content (placeholder text)
-                        self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"C{x}R{y}", fill="black", tags="cell_content")
+            ymin, ymax = max(linf_y, orig_y0), min(lsup_y, orig_y1)
+            for y in range(ymin, ymax + 1):
+                for x in range(linf_x, lsup_x + 1):
+                    x0, y0, x1, y1 = self.cell_coordinates(x, y)
+                    # Draw cell content (placeholder text)
+                    cell_content = self.cell_content(1, x, y)
+                    self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
+            print(f"(xroot == {self.coords_vportq1[0]})printed cells from {(linf_x, lsup_x)} to {(ymin, ymax)} in quadrant 1")
 
-        if xroot_in > 0 and yroot_in > 0:
-            if (xroot_in, yroot_in) == (COL_CELLS_WIDTH, ROW_CELLS_HEIGHT):
+        if xroot_in > self.viewport_q3[0] - COL_CELLS_WIDTH and yroot_in > self.viewport_q3[1] - ROW_CELLS_HEIGHT:
+            if (xroot_in, yroot_in) == self.coords_vportq3:
                 # Tercer cuadrante
                 orig, coords_orig =  self.quadrant_data(3)
-                for y in range(orig[1], orig[3]):
-                    for x in range(orig[0], orig[2]):
-                        x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
-                        # Draw cell content (placeholder text)
-                        self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"Q3_C{x}R{y}", fill="black", tags="cell_content")
+                if orig[0] < orig[2] and orig[1] < orig[3]:
+                    for y in range(orig[1], orig[3]):
+                        for x in range(orig[0], orig[2]):
+                            x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
+                            # Draw cell content (placeholder text)
+                            cell_content = self.cell_content(3, x, y)
+                            self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
+                    print(f"(xroot > 0 and yroot > 0)printed cells from {(orig[0], orig[2] - 1)} to {(orig[1], orig[3] - 1)} in quadrant 3")
             # Cuarto cuadrante
             orig, coords_orig =  self.quadrant_data(4)
             orig_x0, orig_y0, orig_x1, orig_y1 = orig
             ymin, ymax = max(linf_y, orig_y0), min(lsup_y, orig_y1)
-            for y in range(ymin, ymax + 1):
-                for x in range(orig_x0, orig_x1):
-                    x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
-                    # Draw cell content (placeholder text)
-                    self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"Q4_C{x}R{y}", fill="black", tags="cell_content")
-
+            if orig_x1 > orig_x0:
+                for y in range(ymin, ymax + 1):
+                    for x in range(orig_x0, orig_x1):
+                        x0, y0, x1, y1 = self.cell_coordinates(x, y, orig, coords_orig)
+                        # Draw cell content (placeholder text)
+                        cell_content = self.cell_content(4, x, y)
+                        self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
+                print(f"(xroot > 0 and yroot > 0) printed cells from {(orig_x0, orig_x1 - 1)} to {(ymin, ymax)} in quadrant 4")
             # Primer cuadrante
-            for x in range(viewport_x0, linf_x):
-                for y in range(ymin, ymax + 1):
-                    x0, y0, x1, y1 = self.cell_coordinates(x, y)
-                    # Draw cell content (placeholder text)
-                    self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"C{x}R{y}", fill="black", tags="cell_content")
-
-            for x in range(lsup_x + 1, viewport_x1 + 1):
-                for y in range(ymin, ymax + 1):
-                    x0, y0, x1, y1 = self.cell_coordinates(x, y)
-                    # Draw cell content (placeholder text)
-                    self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"C{x}R{y}", fill="black", tags="cell_content")   
+            if linf_x > viewport_x0:
+                for x in range(viewport_x0, linf_x):
+                    for y in range(ymin, ymax + 1):
+                        x0, y0, x1, y1 = self.cell_coordinates(x, y)
+                        # Draw cell content (placeholder text)
+                        cell_content = self.cell_content(1, x, y)
+                        self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
+                print(f"(xroot > 0 and yroot > 0) printed cells from {(viewport_x0, linf_x - 1)} to {(ymin, ymax)} in quadrant 1")
+            if lsup_x < viewport_x1:
+                for x in range(lsup_x + 1, viewport_x1 + 1):
+                    for y in range(ymin, ymax + 1):
+                        x0, y0, x1, y1 = self.cell_coordinates(x, y)
+                        # Draw cell content (placeholder text)
+                        cell_content = self.cell_content(1, x, y)
+                        self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
+                print(f"(xroot > 0 and yroot > 0)printed cells from {(lsup_x + 1, viewport_x1)} to {(ymin, ymax)} in quadrant 1")
 
         # Update the viewport
         self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)
         self.set_freeze_lines()
+        if not self.f_gridlines:
+            self.tag_lower("grid_lines")
+        if self.error_report:
+            self.event_generate("<<errorReport>>")
 
     def set_freeze_lines(self):
         coord_acell_x, coord_acell_y = self.coords_vportq1
@@ -343,8 +420,12 @@ class SheetUI(tk.Canvas):
         self.viewport_q1 = self.viewport_q1[:2] + (viewport_x1, viewport_y1)
         self.configure(scrollregion=(0, 0, MAX_COLS * CELL_WIDTH, MAX_ROWS * CELL_HEIGHT))
         self.delete("all")
-        self.create_rectangle(0, 0, COL_CELLS_WIDTH, ROW_CELLS_HEIGHT, fill="green", outline="black", tags="corner")
-        self.setGUI()
+        x0, x1 = self.coords_vportq3[0] - COL_CELLS_WIDTH, self.coords_vportq3[0]
+        y0, y1 = self.coords_vportq3[1] - ROW_CELLS_HEIGHT, self.coords_vportq3[1]
+        self.create_rectangle(x0, y0, x1, y1, fill="green", outline="black", tags="corner")
+        self.toggle_headings()
+
+        # self.setGUI()
         self.set_active_cell()
 
     def arrow_click(self, event):
@@ -436,14 +517,14 @@ class SheetUI(tk.Canvas):
             pivot.x = max(linf_x, min(MAX_COLS, pivot.x + dx))
             pivot.y = max(linf_y, min(MAX_ROWS, pivot.y + dy))
             xin, yin = pivot.x, pivot.y
+        orig = self.quadrant_data(3)[0]
         nquadrant = self.cell_quadrant(xin, yin, isCoord=False)
-        if nquadrant == 2:
-            yin = self.viewport_q1[1]
-        elif nquadrant == 3:
-            xin, yin = self.viewport_q1[0], self.viewport_q1[1]
-        elif nquadrant == 4:
-            xin = self.viewport_q1[0]
-        self.show_cell(xin, yin)
+        if (xin >= orig[0] and yin >= orig[1]) and nquadrant != 3:
+            if nquadrant == 2:
+                yin = self.viewport_q1[1]
+            elif nquadrant == 4:
+                xin = self.viewport_q1[0]
+            self.show_cell(xin, yin)
         self.set_active_cell()
 
     def move_viewport(self, x, y):
@@ -457,6 +538,8 @@ class SheetUI(tk.Canvas):
         linf_x, linf_y = self.cell_coordinates(x, y)[:2]
         deltax, deltay = linf_x - self.coords_vportq1[0], linf_y - self.coords_vportq1[1]
         dx = dy = 0
+        clinf_y = self.coords_vportq3[1] - ROW_CELLS_HEIGHT
+        clinf_x = self.coords_vportq3[0] - COL_CELLS_WIDTH
         if deltax < 0:
             # left displacement
             x0 = x
@@ -464,7 +547,7 @@ class SheetUI(tk.Canvas):
             if deltax + winfo_width < self.coords_vportq1[0]:
                 # We need to move the viewport to the left a distance such that any information
                 # displayed in the viewport is lost.
-                items = self.find_enclosed(self.coords_vportq1[0] - 1, -1, lsup_x + 1, lsup_y + 1)
+                items = self.find_enclosed(self.coords_vportq1[0] - 1, clinf_y - 1, lsup_x + 1, lsup_y + 1)
                 self.delete(*items)
                 viewport_x0 = x0
                 dx = 1 # Needed to indicate redraw
@@ -474,11 +557,11 @@ class SheetUI(tk.Canvas):
                 viewport_x1, dmy = self.cell_containing_coords(winfo_width + dx, 0)
                 linf_x = self.cell_coordinates(viewport_x1, dmy)[2]
 
-                items = self.find_enclosed(linf_x - 1, -1, lsup_x + 1, lsup_y + 1)
+                items = self.find_enclosed(linf_x - 1, clinf_y - 1, lsup_x + 1, lsup_y + 1)
                 self.delete(*items)
 
                 # Move the viewport dx pixel to the left
-                items = self.find_enclosed(self.coords_vportq1[0] - 1, -1, linf_x + 1, lsup_y + 1)
+                items = self.find_enclosed(self.coords_vportq1[0] - 1, clinf_y - 1, linf_x + 1, lsup_y + 1)
                 for item in items:
                     self.move(item, -dx, 0)
                 viewport_x0 = x0
@@ -490,7 +573,7 @@ class SheetUI(tk.Canvas):
             if deltax - winfo_width > winfo_width:
                 # We need to move the viewport to the right a distance such that any information
                 # displayed in the viewport is lost.
-                items = self.find_enclosed(self.coords_vportq1[0] - 1, -1, lsup_x + 1, lsup_y + 1)
+                items = self.find_enclosed(self.coords_vportq1[0] - 1, clinf_y - 1, lsup_x + 1, lsup_y + 1)
                 self.delete(*items)
                 viewport_x0 = x1
                 self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
@@ -498,10 +581,10 @@ class SheetUI(tk.Canvas):
             else:
                 # Remove items that falls beyond the right edge
                 dx = deltax
-                items = self.find_enclosed(self.coords_vportq1[0] - 1, -1, linf_x + 1, lsup_y + 1)
+                items = self.find_enclosed(self.coords_vportq1[0] - 1, clinf_y - 1, linf_x + 1, lsup_y + 1)
                 self.delete(*items)
                 # Move the viewport dx pixel to the left
-                items = self.find_enclosed(linf_x - 1, -1, lsup_x + 1, lsup_y + 1)
+                items = self.find_enclosed(linf_x - 1, clinf_y - 1, lsup_x + 1, lsup_y + 1)
                 for item in items:
                     self.move(item, -dx, 0)
                 viewport_x0 = self.cell_containing_coords(linf_x + 1, 0)[0]
@@ -514,7 +597,7 @@ class SheetUI(tk.Canvas):
             if deltay + winfo_height < self.coords_vportq1[1]:
                 # We need to move the viewport to the top a distance such that any information
                 # displayed in the viewport is lost.
-                items = self.find_enclosed(-1, self.coords_vportq1[1] - 1, lsup_x + 1, lsup_y + 1)
+                items = self.find_enclosed(clinf_x - 1, self.coords_vportq1[1] - 1, lsup_x + 1, lsup_y + 1)
                 self.delete(*items)
                 viewport_y0 = y0
                 dy = 1  # Needed to indicate redraw
@@ -524,11 +607,11 @@ class SheetUI(tk.Canvas):
                 dmy, viewport_y1 = self.cell_containing_coords(0, winfo_height + dy)
                 linf_y = self.cell_coordinates(dmy, viewport_y1)[3]
 
-                items = self.find_enclosed(-1, linf_y - 1, lsup_x + 1, lsup_y + 1)
+                items = self.find_enclosed(clinf_x, linf_y - 1, lsup_x + 1, lsup_y + 1)
                 self.delete(*items)
 
                 # Move the viewport dy pixel up
-                items = self.find_enclosed(-1, self.coords_vportq1[1] - 1,  lsup_x -dx + 1, linf_y + 1)
+                items = self.find_enclosed(clinf_x, self.coords_vportq1[1] - 1,  lsup_x -dx + 1, linf_y + 1)
                 for item in items:
                     self.move(item, 0, -dy)
                 viewport_y0 = y0
@@ -539,7 +622,7 @@ class SheetUI(tk.Canvas):
             if deltay - winfo_height > winfo_height:
                 # We need to move the viewport to the bottom a distance such that any information
                 # displayed in the viewport is lost.
-                items = self.find_enclosed(-1, self.coords_vportq1[1] - 1, lsup_x + 1, lsup_y + 1)
+                items = self.find_enclosed(clinf_x, self.coords_vportq1[1] - 1, lsup_x + 1, lsup_y + 1)
                 self.delete(*items)
                 viewport_y0 = y1
                 self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
@@ -547,15 +630,15 @@ class SheetUI(tk.Canvas):
             else:
                 # Remove items that falls below the bottom edge
                 dy = deltay
-                items = self.find_enclosed(-1, self.coords_vportq1[1] - 1, lsup_x + 1, linf_y + 1)
+                items = self.find_enclosed(clinf_x, self.coords_vportq1[1] - 1, lsup_x + 1, linf_y + 1)
                 self.delete(*items)
                 # Move the viewport dy pixel up
-                items = self.find_enclosed(-1, linf_y - 1, lsup_x + 1, lsup_y + 1)
+                items = self.find_enclosed(clinf_x - 1, linf_y - 1, lsup_x + 1, lsup_y + 1)
                 for item in items:
                     self.move(item, 0, -dy)
                 viewport_y0 = self.cell_containing_coords(0, linf_y + 1)[1]
                 self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
-
+        # dx = dy = 0
         if dx or dy:
             if dx:
                 viewport_x1 = self.cell_containing_coords(winfo_width, 0)[0]
@@ -571,7 +654,8 @@ class SheetUI(tk.Canvas):
     def show_cell(self, xin, yin):
         winfo_width, winfo_height = self.winfo_width(), self.winfo_height()
         viewport_x0, viewport_y0, viewport_x1, viewport_y1 = self.viewport_q1
-        if xin >= viewport_x1:
+        lsup_coordx, lsup_coordy = self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+        if lsup_coordx > winfo_width and xin >= viewport_x1:
             xright = self.cell_coordinates(xin, 0)[2]
             x = self.cell_containing_coords(xright - (winfo_width - self.coords_vportq1[0]), 0)[0]
             xright = self.cell_coordinates(x, 0)[2]
@@ -579,7 +663,7 @@ class SheetUI(tk.Canvas):
         elif xin < viewport_x0:
             viewport_x0 = xin
         
-        if yin >= viewport_y1:
+        if  lsup_coordy > winfo_height and yin >= viewport_y1:
             ybottom = self.cell_coordinates(0, yin)[3]
             y = self.cell_containing_coords(0, ybottom - (winfo_height - self.coords_vportq1[1]))[1]
             ybottom = self.cell_coordinates(0, y)[3]
@@ -588,13 +672,52 @@ class SheetUI(tk.Canvas):
             viewport_y0 = yin
         self.move_viewport(viewport_x0, viewport_y0)
         pass
+
+    def toggle_headings(self, *args):
+        """Toggles the visibility of headings."""
+        if self.f_headings:
+            dx, dy = linf_x, linf_y = COL_CELLS_WIDTH, ROW_CELLS_HEIGHT
+            lsup_x, lsup_y = self.cell_coordinates(self.viewport_q1[2], self.viewport_q1[3])[2:]
+            self.coords_vportq1 = (self.coords_vportq1[0] - dx, self.coords_vportq1[1] - dy)
+            self.coords_vportq3 = (0, 0)
+            viewport_x1, viewport_y1 = self.cell_containing_coords(self.winfo_width(), self.winfo_height())
+            self.viewport_q1 = (self.viewport_q1[0], self.viewport_q1[1], viewport_x1, viewport_y1)
+            items = self.find_enclosed(-1, -1, lsup_x + 1, lsup_y + 1)
+            for item in items:
+                # Move items to the left and up
+                self.move(item, -dx, -dy)
+            self.setGUI()
+        else:
+            dx, dy = linf_x, linf_y = COL_CELLS_WIDTH, ROW_CELLS_HEIGHT
+            lsup_x, lsup_y = self.cell_coordinates(self.viewport_q1[2], self.viewport_q1[3])[2:]
+            self.coords_vportq1 = (self.coords_vportq1[0] + dx, self.coords_vportq1[1] + dy)
+            self.coords_vportq3 = (dx, dy)
+            viewport_x1, viewport_y1 = self.cell_containing_coords(self.winfo_width(), self.winfo_height())
+            self.viewport_q1 = (self.coords_vportq1[0], self.coords_vportq1[1], viewport_x1, viewport_y1)
+            items = self.find_enclosed(-linf_x - 1, -linf_y - 1, lsup_x + 1, lsup_y + 1)
+            for item in items:
+                self.move(item, dx, dy)
+        self.f_headings = not self.f_headings
+
+    def toggle_gridlines(self, *args):
+        """Toggles the visibility of gridlines."""
+        if self.f_gridlines:
+            self.tag_lower("grid_lines")
+        else:
+            self.tag_raise("grid_lines")
+        self.f_gridlines = not self.f_gridlines
     
     def mouse_click(self, event):
         """Sets the active cell based on the click position."""
+        self.f_drag = True
         if event.x < COL_CELLS_WIDTH or event.y < ROW_CELLS_HEIGHT:
             if event.x < COL_CELLS_WIDTH and event.y < ROW_CELLS_HEIGHT:
-                test = 'freeze_panes'
-                if test == 'freeze_panes':
+                test = 'toggle_headings'
+                if test == 'toggle_headings':
+                    msg1 = "Toggle headings (yes/no):"
+                elif test == 'toggle_gridlines':
+                    msg1 = "Toggle gridlines (yes/no):"
+                elif test == 'freeze_panes':
                     msg1 = "Enter the pivot cell coordinates (col, row):"
                 elif test == 'show_cell':
                     msg1 = "Enter the pivot cell coordinates (col, row):"
@@ -616,6 +739,10 @@ class SheetUI(tk.Canvas):
             else:
                 print("Clicked on the row header")
             return "break"
+        # Check if the click is not on an existing cell
+        items = self.find_overlapping(event.x, event.y, event.x, event.y)
+        if not items:
+            return "break"
         nquadrant = self.cell_quadrant(event.x, event.y)
         orig, coords_orig = self.quadrant_data(nquadrant)
         clk_x, clk_y = self.cell_containing_coords(event.x, event.y, orig, coords_orig)
@@ -626,36 +753,39 @@ class SheetUI(tk.Canvas):
         self.focus_set()  # Set focus to the canvas
 
     def mouse_drag(self, event):
-        if event.x > COL_CELLS_WIDTH and event.y < ROW_CELLS_HEIGHT:
-            self.yview('scroll', '-1', 'units')
-            clk_x, clk_y = self.cell_containing_coords(event.x, ROW_CELLS_HEIGHT + 1)
-            with self.pivot_point(isActiveCell=False) as pivot:
-                pivot.x = clk_x
-            self.set_active_cell()
-        elif event.x > COL_CELLS_WIDTH and event.y > ROW_CELLS_HEIGHT:
-            clk_x, clk_y = self.cell_containing_coords(event.x, event.y)
-            with self.pivot_point(isActiveCell=False) as pivot:
-                pivot.x = clk_x
-                pivot.y = clk_y
-            self.show_cell(clk_x, clk_y)
-            self.set_active_cell()
-        elif event.x < COL_CELLS_WIDTH and event.y > ROW_CELLS_HEIGHT:
-            self.xview('scroll', '-1', 'units')
-            clk_x, clk_y = self.cell_containing_coords(COL_CELLS_WIDTH + 1, event.y)
-            with self.pivot_point(isActiveCell=False) as pivot:
-                pivot.y = clk_y
-            self.set_active_cell()
-        else:
-            viewport_x0, viewport_y0 = self.viewport_q1[:2]
-            self.move_viewport(viewport_x0 - 1, viewport_y0 - 1)
-            with self.pivot_point(isActiveCell=False) as pivot:
-                clk_x, clk_y = self.cell_containing_coords(COL_CELLS_WIDTH + 1,ROW_CELLS_HEIGHT + 1)
-                pivot.x = clk_x
-                pivot.y = clk_y
-            self.set_active_cell()
+        """Handles mouse drag events to set the active cell."""
+        if self.f_drag:
+            if event.x > COL_CELLS_WIDTH and event.y < ROW_CELLS_HEIGHT:
+                self.yview('scroll', '-1', 'units')
+                clk_x, clk_y = self.cell_containing_coords(event.x, ROW_CELLS_HEIGHT + 1)
+                with self.pivot_point(isActiveCell=False) as pivot:
+                    pivot.x = clk_x
+                self.set_active_cell()
+            elif event.x > COL_CELLS_WIDTH and event.y > ROW_CELLS_HEIGHT:
+                clk_x, clk_y = self.cell_containing_coords(event.x, event.y)
+                with self.pivot_point(isActiveCell=False) as pivot:
+                    pivot.x = clk_x
+                    pivot.y = clk_y
+                self.show_cell(clk_x, clk_y)
+                self.set_active_cell()
+            elif event.x < COL_CELLS_WIDTH and event.y > ROW_CELLS_HEIGHT:
+                self.xview('scroll', '-1', 'units')
+                clk_x, clk_y = self.cell_containing_coords(COL_CELLS_WIDTH + 1, event.y)
+                with self.pivot_point(isActiveCell=False) as pivot:
+                    pivot.y = clk_y
+                self.set_active_cell()
+            else:
+                viewport_x0, viewport_y0 = self.viewport_q1[:2]
+                self.move_viewport(viewport_x0 - 1, viewport_y0 - 1)
+                with self.pivot_point(isActiveCell=False) as pivot:
+                    clk_x, clk_y = self.cell_containing_coords(COL_CELLS_WIDTH + 1,ROW_CELLS_HEIGHT + 1)
+                    pivot.x = clk_x
+                    pivot.y = clk_y
+                self.set_active_cell()
 
 
     def mouse_release(self, event):
+        self.f_drag = False
         pass
 
     def freeze_panes(self, *args):
@@ -709,7 +839,8 @@ class SheetUI(tk.Canvas):
 
         # change color for col_selected and row_selected
         old_selected = self.find_withtag("row_selected")
-        new_selected = [srow for srow in self.find_enclosed(-1, sel_y0 - 1, self.coords_vportq3[0] + 1, sel_y1 + 1) if self.type(srow) == "rectangle"]
+        x0, x1 = self.coords_vportq3[0] - COL_CELLS_WIDTH, self.coords_vportq3[0]
+        new_selected = [srow for srow in self.find_enclosed(x0 - 1, sel_y0 - 1, x1 + 1, sel_y1 + 1) if self.type(srow) == "rectangle"]
         to_remove = set(old_selected) - set(new_selected)
         for row_id in to_remove:
             self.dtag(row_id, "row_selected")
@@ -719,7 +850,8 @@ class SheetUI(tk.Canvas):
             self.addtag_withtag("row_selected", row_id)
             self.itemconfigure(row_id, fill="blue")
         old_selected = self.find_withtag("col_selected")
-        new_selected = [scol for scol in self.find_enclosed(sel_x0 - 1, -1, sel_x1 + 1, self.coords_vportq3[1] + 1) if self.type(scol) == "rectangle"]
+        y0, y1 = self.coords_vportq3[1] - ROW_CELLS_HEIGHT, self.coords_vportq3[1]
+        new_selected = [scol for scol in self.find_enclosed(sel_x0 - 1, y0 - 1, sel_x1 + 1, y1 + 1) if self.type(scol) == "rectangle"]
         to_remove = set(old_selected) - set(new_selected)
         for col_id in to_remove:
             self.dtag(col_id, "col_selected")
@@ -774,34 +906,68 @@ class SheetUI(tk.Canvas):
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    root.columnconfigure(0, weight=1)
-    root.rowconfigure(0, weight=1)
+    class SheetViewer(tk.Tk):
+        def __init__(self):
+            super().__init__()
+            self.setGui()
+            self.bind("<<ActiveCellChanged>>", self.on_active_cell_changed)
+            self.bind("<<SelectedCellsChanged>>", self.on_selected_cells_changed)
+            self.bind("<<errorReport>>", self.on_error_report)
 
-    # Create a frame to hold the canvas and scrollbars
-    frame = ttk.Frame(root)
-    frame.grid(column=0, row=0, sticky=(tk.N, tk.W, tk.E, tk.S))
-    frame.columnconfigure(0, weight=1)
-    frame.rowconfigure(0, weight=1)
+        def on_active_cell_changed(self, event):
+            active_cell = event.widget.active_cell
+            self.activeCell.config(text=f"Active Cell: {active_cell}")
 
-    # Create vertical and horizontal scrollbars
-    v_scroll = ttk.Scrollbar(frame, orient="vertical")
-    h_scroll = ttk.Scrollbar(frame, orient="horizontal")
+        def on_selected_cells_changed(self, event):
+            selected_cells = event.widget.selected_cells
+            sel_x0, sel_y0, sel_x1, sel_y1 = selected_cells
+            nrows = sel_y1 - sel_y0 + 1
+            ncols = sel_x1 - sel_x0 + 1
+            self.activeCell.config(text=f"Selected Cells: {nrows}R x {ncols}C ({sel_x0}, {sel_y0}) to ({sel_x1}, {sel_y1})")
 
-    # Create the SheetUI canvas
-    sheetui = SheetUI(frame, bg="white", 
-                      yscrollcommand=v_scroll.set, 
-                      xscrollcommand=h_scroll.set,
-                    #   scrollregion=(0, 0, 10000, 10000)
-    )  # Adjust scrollregion as needed
+        def on_error_report(self, event):
+            widget: SheetUI = event.widget
+            error_message = widget.error_report
+            self.errorReport.config(text=error_message)
+            event.widget.errorReport = ""  # Clear the error message after displaying it
 
-    # Configure scrollbars to control the canvas
-    v_scroll.config(command=sheetui.yview)
-    h_scroll.config(command=sheetui.xview)
+        def setGui(self):
+            self.columnconfigure(0, weight=1)
+            self.rowconfigure(2, weight=1)  # Change to row 2 for the main frame
 
-    # Layout
-    sheetui.grid(row=0, column=0, sticky="nsew")
-    v_scroll.grid(row=0, column=1, sticky="ns")
-    h_scroll.grid(row=1, column=0, sticky="ew")
+            # --- Add labels at the top ---
+            self.activeCell = ttk.Label(self, text="Active Cell: ", background="magenta", font=("Arial", 10))
+            self.activeCell.grid(row=0, column=0, sticky="ew", padx=4, pady=(4, 0))
 
+            self.errorReport = ttk.Label(self, text="", background="grey", font=("Arial", 14), foreground="red", anchor="w")
+            self.errorReport.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 4))
+
+            # Create a frame to hold the canvas and scrollbars
+            frame = ttk.Frame(self)
+            frame.grid(column=0, row=2, sticky=(tk.N, tk.W, tk.E, tk.S))
+            frame.columnconfigure(0, weight=1)
+            frame.rowconfigure(0, weight=1)
+
+            # Create vertical and horizontal scrollbars
+            v_scroll = ttk.Scrollbar(frame, orient="vertical")
+            h_scroll = ttk.Scrollbar(frame, orient="horizontal")
+
+            # Create the SheetUI canvas
+            self.sheetui = sheetui = SheetUI(frame, bg=GRID_COLOR, 
+                                    yscrollcommand=v_scroll.set, 
+                                    xscrollcommand=h_scroll.set,
+                                    # scrollregion=(0, 0, 2000, 2000)
+            )  # Adjust scrollregion as needed
+
+                # Configure scrollbars to control the canvas
+            v_scroll.config(command=sheetui.yview)
+            h_scroll.config(command=sheetui.xview)
+
+            # Layout
+            sheetui.grid(row=0, column=0, sticky="nsew")
+            v_scroll.grid(row=0, column=1, sticky="ns")
+            h_scroll.grid(row=1, column=0, sticky="ew")
+
+
+    root = SheetViewer()
     root.mainloop()
