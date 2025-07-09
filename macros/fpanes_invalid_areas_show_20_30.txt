@@ -1,0 +1,8 @@
+self.sheetui.show_cell(20, 30)
+
+self.sheetui.delete_invalid_areas()
+
+self.sheetui.delete_invalid_areas()
+self.sheetui.toggle_freeze_panes(4, 6)
+self.sheetui.show_cell(20, 30)
+self.sheetui.delete_invalid_areas()

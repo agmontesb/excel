@@ -1,0 +1,3 @@
+self.sheetui.show_cell(20, 30)
+self.sheetui.delete_invalid_areas()
+self.sheetui.delete_invalid_areas()

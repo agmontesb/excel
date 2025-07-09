@@ -3,16 +3,17 @@
     que consiste en un área de celdas y una barra de estado que permite cambiar a otras hojas de trabajo '
     además de la activa'
 '''
-import re
+import os
 import tkinter as tk
 from tkinter import ttk
 from tkinter import simpledialog
+from tkinter import filedialog
 from contextlib import contextmanager
 from types import SimpleNamespace
 
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Constants for key states
@@ -159,18 +160,29 @@ class SheetUI(tk.Canvas):
         sel_x1, sel_y1 = self.cell_coordinates(x1, y1, orig, coords_orig)[2:]
         return (sel_x0, sel_y0, sel_x1, sel_y1)
     
+    def area_cells(self, sel_x0, sel_y0, sel_x1, sel_y1):
+        nquadrant = self.cell_quadrant(sel_x0, sel_y0, isCoord=True)
+        orig, coords_orig = self.quadrant_data(nquadrant)
+        x0, y0 = self.cell_containing_coords(sel_x0, sel_y0, orig, coords_orig)
+        nquadrant = self.cell_quadrant(sel_x1 - 1, sel_y1 - 1, isCoord=True)
+        orig, coords_orig = self.quadrant_data(nquadrant)
+        x1, y1 = self.cell_containing_coords(sel_x1 - 1, sel_y1 - 1, orig, coords_orig)
+        return (x0, y0, x1, y1)
+    
     def cell_containing_coords(self, x, y, viewport=None, coords_viewport=None):
         """Returns the cell address containing the given x and y screen coordinates."""
         if viewport is None:
             coords_viewport, viewport = self.coords_vportq1, self.viewport_q1
-        xcell = (x - coords_viewport[0]) // CELL_WIDTH + viewport[0]
-        ycell = (y - coords_viewport[1]) // CELL_HEIGHT + viewport[1]
+        xcell = int((x - coords_viewport[0]) // CELL_WIDTH + viewport[0])
+        ycell = int((y - coords_viewport[1]) // CELL_HEIGHT + viewport[1])
         xcell = max(1, min(MAX_COLS, xcell))
         ycell = max(1, min(MAX_ROWS, ycell))
         return (xcell, ycell)
     
     def cell_quadrant(self, x: int, y:int, isCoord: bool=True) -> int:
         """Returns the quadrant of the cell containing the given x and y screen coordinates."""
+        if self.coords_vportq1 == self.viewport_q3:
+            return 1
         xdiscr = self.coords_vportq1[0] if isCoord else self.viewport_q3[2]
         ydiscr = self.coords_vportq1[1] if isCoord else self.viewport_q3[3]
         if x >= xdiscr and y >= ydiscr:
@@ -186,15 +198,87 @@ class SheetUI(tk.Canvas):
         if nquadrant == 1:
             return self.viewport_q1, self.coords_vportq1
         elif nquadrant == 2:
-            orig = self.viewport_q1[0], self.viewport_q3[1], self.viewport_q1[2], self.viewport_q3[3]
+            orig = self.viewport_q1[0], self.viewport_q3[1], self.viewport_q1[2], self.viewport_q3[3] - 1
             return orig, (self.coords_vportq1[0], self.coords_vportq3[1])
         elif nquadrant == 3:
-            return self.viewport_q3, self.coords_vportq3
-        else:
-            orig = self.viewport_q3[0], self.viewport_q1[1], self.viewport_q3[2], self.viewport_q1[3]
+            return (*self.viewport_q3[:2], self.viewport_q3[2] - 1, self.viewport_q3[3] - 1), self.coords_vportq3
+        else: # nquadrant == 4
+            orig = self.viewport_q3[0], self.viewport_q1[1], self.viewport_q3[2] - 1, self.viewport_q1[3]
             return orig, (self.coords_vportq3[0], self.coords_vportq1[1])
-    
+        
     def setGUI(self):
+        winfo_width, winfo_height = self.winfo_width() + int(self.f_headings) * COL_CELLS_WIDTH, self.winfo_height() + int(self.f_headings) * ROW_CELLS_HEIGHT
+        self.validate_areas()
+
+        # Draw the background
+        self.delete("background")
+        linf_coordx, linf_coordy = self.coords_vportq3[0] - COL_CELLS_WIDTH, self.coords_vportq3[1] - ROW_CELLS_HEIGHT
+        lsup_coordx, lsup_coordy = self.cell_coordinates(*self.viewport_q1[2:])[2:]
+        self.create_rectangle(linf_coordx, linf_coordy, lsup_coordx, lsup_coordy, fill="white", outline=GRID_COLOR, tags="background")
+        self.tag_lower("background")  # Ensure the background is at the bottom of the stack
+
+        # Draw column headings
+        for item in self.find_withtag("cols_to_draw"):
+            cx0, cy0, cx1, cy1 = self.coords(item)
+            xcell = 1
+            while cx0 < cx1 and xcell < MAX_COLS:
+                nquadrant = self.cell_quadrant(cx0, cy1, isCoord=True)
+                orig, coords_orig = self.quadrant_data(nquadrant)
+                xcell = self.cell_containing_coords(cx0, cy0, orig, coords_orig)[0]
+                y0, y1 = cy0, cy1
+                x0, x1 = self.cell_coordinates(xcell, 0, orig, coords_orig)[::2]
+                self.create_rectangle(x0, y0, x1, y1, fill="green", outline="black", tags="column")
+                # Draw cell headings
+                label = self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"C{xcell}", fill="white")
+                self.addtag_withtag("columns_tag", label)  # Add tag for columns
+                # Draw vertical lines
+                self.create_line(x0, y1, x0, winfo_height, fill=GRID_COLOR, tags="grid_lines")
+                cx0 = x1
+            logging.debug(f"Last column draw {xcell}")
+
+        # Draw row headings
+        for item in self.find_withtag("rows_to_draw"):
+            cx0, cy0, cx1, cy1 = self.coords(item)
+            ycell = 1
+            while cy0 < cy1 and ycell < MAX_ROWS:
+                nquadrant = self.cell_quadrant(cx1, cy0, isCoord=True)
+                orig, coords_orig = self.quadrant_data(nquadrant)
+                ycell = self.cell_containing_coords(cx0, cy0, orig, coords_orig)[1]
+                x0, x1 = cx0, cx1
+                y0, y1 = self.cell_coordinates(0, ycell, orig, coords_orig)[1::2]
+                self.create_rectangle(x0, y0, x1, y1, fill="green", outline="black", tags="row")
+                # Draw cell headings
+                label = self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=f"R{ycell}", fill="white")
+                self.addtag_withtag("rows_tag", label)  # Add tag for columns
+                # Draw vertical lines
+                self.create_line(x0, y1, winfo_width, y1, fill=GRID_COLOR, tags="grid_lines")
+                cy0 = y1
+            logging.debug(f"Last row draw {ycell}")
+
+        # Draw cells content
+        quadrants = [1, 2, 3, 4] if self.coords_vportq1 != self.coords_vportq3 else [1]
+        for item in self.find_withtag("cells_to_draw"):
+            ix0, iy0, ix1, iy1 = self.coords(item)
+            for nquadrant in quadrants:
+                orig, coords_orig = self.quadrant_data(nquadrant)
+                ax0, ay0, ax1, ay1 = self.area_coordinates(*orig)
+                # Overlaping area
+                cx0, cy0 = max(ix0, ax0), max(iy0, ay0)
+                cx1, cy1 = min(ix1, ax1), min(iy1, ay1)
+                if not (cx1 > cx0 and cy1 > cy0):
+                    continue
+                while cx0 < cx1:
+                    y0 = cy0
+                    while y0 < cy1:
+                        xcell, ycell = self.cell_containing_coords(cx0, y0, orig, coords_orig)
+                        x0, y0, x1, y1 = self.cell_coordinates(xcell, ycell, orig, coords_orig)
+                        cell_content = self.cell_content(nquadrant, xcell, ycell)
+                        self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
+                        y0 = y1
+                    cx0 = x1
+        [self.tag_lower(tag) for tag in ("cols_to_draw", "rows_to_draw", "cells_to_draw")]
+    
+    def old_setGUI(self):
         """Sets the GUI for the worksheet with a specified width and height."""
 
         # Draw the background
@@ -428,19 +512,113 @@ class SheetUI(tk.Canvas):
             linf_y = self.coords_vportq3[1] - 2 * ROW_CELLS_HEIGHT
             self.create_line(coord_acell_x, linf_y, coord_acell_x, winfo_height, fill="black", tags="freeze_line")
 
+    def validate_areas(self):
+        iareas = self.find_withtag("invalid_area")
+        while iareas:
+            item, *iareas = iareas
+            cx0, cy0, cx1, cy1 = self.coords(item)
+            self.delete(item)
+            if cx0 < self.coords_vportq3[0]:
+                # Rows to draw
+                area = cx0, cy0, self.coords_vportq3[0], cy1
+                self.tag_area(*area, tag="rows_to_draw")
+                cx0 = self.coords_vportq3[0]
+            if cy0 < self.coords_vportq3[1]:
+                # Columns to draw
+                area = cx0, cy0, cx1, self.coords_vportq3[1]
+                self.tag_area(*area, tag="cols_to_draw")
+                cy0 = self.coords_vportq3[1]
+            if cx0 == cx1 or cy0 == cy1 or (cx0 == cy0 and cx1 == cy1):
+                continue
+            items = [item for item in self.find_overlapping(cx0, cy0, cx1, cy1) if "cell_to_draw" in self.gettags(item)]
+            to_draw = [(cx0, cy0, cx1, cy1)]
+            for item in items:
+                ix0, iy0, ix1, iy1 = self.coords(item)
+                n = len(to_draw)
+                for i in range(n):
+                    cx0, cy0, cx1, cy1 = to_draw[i]
+                    # Overlaping area
+                    x0 = max(cx0, ix0)
+                    y0 = max(cy0, iy0)
+                    x1 = min(cx1, ix1)
+                    y1 = min(cy1, iy1)
+                    if not (x1 > x0 and y1 > y0):
+                        to_draw.append((cx0, cy0, cx1, cy1))
+                    else:
+                        if cx0 < x0:
+                            to_draw.append((cx0, cy0, x0, cy1))
+                        if cx1 > x1:
+                            to_draw.append((x1, cy0, cx1, cy1))
+                        if cy0 < y0:
+                            to_draw.append((cx0, cy0, cx1, y0))
+                        if cy1 > y1:
+                            to_draw.append((cx0, y1, cx1, cy1))
+                to_draw = to_draw[n:]
+            for area in to_draw:
+                self.tag_area(*area, tag="cells_to_draw")
 
-    def redraw_sheet(self, event):
+    def tag_area(self, *area, tag, cnfg=None):
+        kwargs = {"fill": "lightblue", "outline": "black", "width": 4, "stipple": "gray50", "tags": tag}
+        if cnfg:
+            kwargs.update(cnfg)
+        if tag == "invalid_area" and not self.find_withtag(tag):
+            # Los tags "invalid_area" y ("cell_to_draw", "cols_to_draw", "rows_to_draw") no coexisten
+            [self.delete(item) for atag in ("cols_to_draw", "rows_to_draw", "cells_to_draw") for item in self.find_withtag(atag)]
+        return self.create_rectangle(*area, **kwargs)
+
+    def redraw_sheet(self, event=None, width=None, height=None):
         "Redraws the sheetui when the window is resized or needs updating."
-        winfo_width, winfo_height = self.winfo_width(), self.winfo_height()
-        viewport_x1, viewport_y1 = self.cell_containing_coords(winfo_width + COL_CELLS_WIDTH, winfo_height + ROW_CELLS_HEIGHT)
+        winfo_width = (width or self.winfo_width()) + int(self.f_headings) * COL_CELLS_WIDTH
+        winfo_height = (height or self.winfo_height()) + int(self.f_headings) * ROW_CELLS_HEIGHT
+        viewport_x1, viewport_y1 = self.cell_containing_coords(winfo_width, winfo_height)
         self.viewport_q1 = self.viewport_q1[:2] + (viewport_x1, viewport_y1)
 
-        self.delete("all")
-        x0, x1 = self.coords_vportq3[0] - COL_CELLS_WIDTH, self.coords_vportq3[0]
-        y0, y1 = self.coords_vportq3[1] - ROW_CELLS_HEIGHT, self.coords_vportq3[1]
-        self.create_rectangle(x0, y0, x1, y1, fill="green", outline="black", tags="corner")
+        clsup_x, clsup_y =self.cell_coordinates(viewport_x1, viewport_y1)[2:]
 
+        # self.delete("all")
+        if self.find_withtag("background"):
+            bg_coords = self.coords("background")
+        else:
+            x0, x1 = self.coords_vportq3[0] - COL_CELLS_WIDTH, self.coords_vportq3[0]
+            y0, y1 = self.coords_vportq3[1] - ROW_CELLS_HEIGHT, self.coords_vportq3[1]
+            bg_coords = (x0, y0, x1, y1)
+            self.create_rectangle(*bg_coords, fill="green", outline="black", tags="corner")
+        
+        for tag in ("invalid_area", ):
+            self.delete(*self.find_withtag(tag))
+        x0, y0, x1, y1 = bg_coords
+
+        # Adjust the gridlines to the new viewport
+        items = self.find_withtag("grid_lines")
+        for item in items:
+            gx0, gy0, gx1, gy1 = self.coords(item)
+            if gy0 == gy1:
+                # Horizontal gridlines
+                self.coords(item, gx0, gy0, clsup_x, gy1)
+            else:
+                # Vertical gridlines
+                self.coords(item, gx0, gy0, gx1, clsup_y)
+
+        # Columns to draw
+        area = (x1, self.coords_vportq3[1] - ROW_CELLS_HEIGHT, winfo_width, self.coords_vportq3[1])
+        self.tag_area(*area, tag="invalid_area")
+        logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+        # Rows to draw
+        area = (self.coords_vportq3[0] - COL_CELLS_WIDTH, y1, self.coords_vportq3[0], winfo_height)
+        self.tag_area(*area, tag="invalid_area")
+        logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+        # Cells to draw
+        areas = [(x1, y1, winfo_width, winfo_height)]
+        if y1 - y0 > ROW_CELLS_HEIGHT:
+            areas.append((x1, self.coords_vportq3[1], winfo_width, y1))
+        if x1 - x0 > COL_CELLS_WIDTH:
+            areas.append((self.coords_vportq3[0], y1, x1, winfo_height))
+        for area in areas:
+            self.tag_area(*area, tag="invalid_area")
+            logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+        self.tag_raise("invalid_area")
         self.setGUI()
+
         self.xview('scroll', '-1', 'units')
         self.yview('scroll', '-1', 'units')
         self.set_active_cell()
@@ -590,6 +768,9 @@ class SheetUI(tk.Canvas):
                 self.delete(*items)
                 viewport_x0 = x0
                 dx = 1 # Needed to indicate redraw
+                area =(self.coords_vportq3[0], self.coords_vportq3[1] - ROW_CELLS_HEIGHT, winfo_width, winfo_height)
+                self.tag_area(*area, tag="invalid_area")
+                logging.debug(f"Invalidated area: {self.area_cells(*area)}")
             else:
                 # Remove items that falls beyond the right edge
                 dx = deltax
@@ -605,6 +786,10 @@ class SheetUI(tk.Canvas):
                     self.move(item, -dx, 0)
                 viewport_x0 = x0
             self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
+
+            area =(self.coords_vportq1[0], clinf_y, self.coords_vportq1[0] - dx, lsup_y)
+            self.tag_area(*area, tag="invalid_area")
+            logging.debug(f"Invalidated area: {self.area_cells(*area)}")
         elif deltax > 0:
             # Rigth displacement
             x1 = x
@@ -617,6 +802,10 @@ class SheetUI(tk.Canvas):
                 viewport_x0 = x1
                 self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
                 dx = 1
+
+                area =(self.coords_vportq3[0], self.coords_vportq3[1] - ROW_CELLS_HEIGHT, winfo_width, winfo_height)
+                self.tag_area(*area, tag="invalid_area")
+                logging.debug(f"Invalidated area: {self.area_cells(*area)}")
             else:
                 # Remove items that falls beyond the right edge
                 dx = deltax
@@ -628,7 +817,15 @@ class SheetUI(tk.Canvas):
                     self.move(item, -dx, 0)
                 viewport_x0 = self.cell_containing_coords(linf_x + 1, 0)[0]
                 self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
+
+                area =(lsup_x - dx, clinf_y, lsup_x, lsup_y)
+                self.tag_area(*area, tag="invalid_area")
+                logging.debug(f"Invalidated area: {self.area_cells(*area)}")
             pass
+            if dx:
+                viewport_x1 = self.cell_containing_coords(winfo_width, 0)[0]
+                self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
+                pass
 
         if deltay < 0:
             y0 = y
@@ -640,6 +837,9 @@ class SheetUI(tk.Canvas):
                 self.delete(*items)
                 viewport_y0 = y0
                 dy = 1  # Needed to indicate redraw
+                area =(clinf_x, self.coords_vportq1[1], lsup_x, lsup_y)
+                self.tag_area(*area, tag="invalid_area")
+                logging.debug(f"Invalidated area: {self.area_cells(*area)}")
             else:
                 # Remove items that falls below the bottom edge
                 dy = deltay
@@ -650,10 +850,13 @@ class SheetUI(tk.Canvas):
                 self.delete(*items)
 
                 # Move the viewport dy pixel up
-                items = self.find_enclosed(clinf_x - 1, self.coords_vportq1[1] - 1,  lsup_x -dx + 1, linf_y + 1)
+                items = self.find_enclosed(clinf_x - 1, self.coords_vportq1[1] - 1,  lsup_x + 1, linf_y + 1)
                 for item in items:
                     self.move(item, 0, -dy)
                 viewport_y0 = y0
+                area =(clinf_x, self.coords_vportq1[1], lsup_x, self.coords_vportq1[1] - dy)
+                self.tag_area(*area, tag="invalid_area")
+                logging.debug(f"Invalidated area: {self.area_cells(*area)}")
             self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
         elif deltay > 0:
             y1 = y
@@ -666,6 +869,9 @@ class SheetUI(tk.Canvas):
                 viewport_y0 = y1
                 self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
                 dy = 1
+                area =(clinf_x, self.coords_vportq1[1], lsup_x, lsup_y)
+                self.tag_area(*area, tag="invalid_area")
+                logging.debug(f"Invalidated area: {self.area_cells(*area)}")
             else:
                 # Remove items that falls below the bottom edge
                 dy = deltay
@@ -677,15 +883,16 @@ class SheetUI(tk.Canvas):
                     self.move(item, 0, -dy)
                 viewport_y0 = self.cell_containing_coords(0, linf_y + 1)[1]
                 self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
+
+                area =(clinf_x, lsup_y - dy, lsup_x, lsup_y)
+                self.tag_area(*area, tag="invalid_area")
+                logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+        if dy:
+            viewport_y1 = self.cell_containing_coords(0, winfo_height)[1]
+            self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
+            pass
         # dx = dy = 0
         if dx or dy:
-            if dx:
-                viewport_x1 = self.cell_containing_coords(winfo_width, 0)[0]
-                pass
-            if dy:
-                viewport_y1 = self.cell_containing_coords(0, winfo_height)[1]
-                pass
-            self.viewport_q1 = (viewport_x0, viewport_y0, viewport_x1, viewport_y1)  # Update the viewport coordinates
             # self.error_report = f'{self.viewport_q1}'
             # self.event_generate("<<errorReport>>")
             self.setGUI()  # Redraw the sheet with the new viewport
@@ -782,56 +989,79 @@ class SheetUI(tk.Canvas):
         """Handles mouse drag events to set the active cell."""
         if self.f_drag:
             # Update the mouse pointer coordinates in screen coordinates
-            event.x = self.winfo_pointerx() - self.winfo_rootx()
-            event.y = self.winfo_pointery() - self.winfo_rooty()
-            if event.x >= COL_CELLS_WIDTH and event.y < ROW_CELLS_HEIGHT:
+            event_x = self.winfo_pointerx() - self.winfo_rootx()
+            event_y = self.winfo_pointery() - self.winfo_rooty()
+            if event is None:
+                logging.debug("Mouse drag event triggered for col o row selection")
+            if event_x >= COL_CELLS_WIDTH and event_y < ROW_CELLS_HEIGHT:
+                # mouse over column headings
                 if self.selected_cells[1::2] != (1, MAX_ROWS):
+                    # Not column selection
                     self.yview('scroll', '-1', 'units')
-                    clk_x, clk_y = self.cell_containing_coords(event.x, ROW_CELLS_HEIGHT + 1)
+                    clk_x, clk_y = self.cell_containing_coords(event_x, ROW_CELLS_HEIGHT + 1)
                     with self.pivot_point(isActiveCell=False) as pivot:
                         pivot.y = clk_y
                     self.set_active_cell()
+                    self.after(1000, self.mouse_drag, event)  # Repeat the drag event after a delay
                 else:
-                    nquadrant = self.cell_quadrant(event.x, ROW_CELLS_HEIGHT)
+                    # Column selection
+                    nquadrant = self.cell_quadrant(event_x, ROW_CELLS_HEIGHT)
                     orig, coords_orig = self.quadrant_data(nquadrant)
-                    clk_x, clk_y = self.cell_containing_coords(event.x, ROW_CELLS_HEIGHT, orig, coords_orig)
-                    logging.debug(f"{event.x=}, {self.winfo_width()=}")
-                    if event.x > self.winfo_width():
+                    clk_x, clk_y = self.cell_containing_coords(event_x, ROW_CELLS_HEIGHT, orig, coords_orig)
+                    logging.debug(f"{event_x=}, {self.winfo_width()=}")
+                    if event_x > self.winfo_width():
                         self.show_cell(clk_x, clk_y)
-                    event.y = ROW_CELLS_HEIGHT - 1
+                        self.after(1000, self.mouse_drag, None)
+                    event_y = ROW_CELLS_HEIGHT - 1
+                    event = tk.Event()
+                    event.x = event_x
+                    event.y = event_y
+                    event.state = SHIFT_PRESSED
                     self.mouse_click(event)
-                self.after(1000, lambda: self.event_generate("<B1-Motion>")) #, x=event.x, y=event.y))
-            elif event.x >= COL_CELLS_WIDTH and event.y >= ROW_CELLS_HEIGHT:
-                clk_x, clk_y = self.cell_containing_coords(event.x, event.y)
+            elif event_x >= COL_CELLS_WIDTH and event_y >= ROW_CELLS_HEIGHT:
+                # mouse over cells
+                clk_x, clk_y = self.cell_containing_coords(event_x, event_y)
                 with self.pivot_point(isActiveCell=False) as pivot:
                     pivot.x = clk_x
                     pivot.y = clk_y
                 self.show_cell(clk_x, clk_y)
                 self.set_active_cell()
-            elif event.x < COL_CELLS_WIDTH and event.y >= ROW_CELLS_HEIGHT:
+            elif event_x < COL_CELLS_WIDTH and event_y >= ROW_CELLS_HEIGHT:
+                # mouse over row headings
                 if self.selected_cells[::2] != (1, MAX_COLS):
+                    # Not row selection
                     self.xview('scroll', '-1', 'units')
-                    clk_x, clk_y = self.cell_containing_coords(COL_CELLS_WIDTH + 1, event.y)
+                    clk_x, clk_y = self.cell_containing_coords(COL_CELLS_WIDTH + 1, event_y)
                     with self.pivot_point(isActiveCell=False) as pivot:
                         pivot.x = clk_x
                     self.set_active_cell()
+                    self.after(1000, self.mouse_drag, event)
                 else:
-                    nquadrant = self.cell_quadrant(COL_CELLS_WIDTH, event.y)
+                    # Row selection
+                    nquadrant = self.cell_quadrant(COL_CELLS_WIDTH, event_y)
                     orig, coords_orig = self.quadrant_data(nquadrant)
-                    clk_x, clk_y = self.cell_containing_coords(COL_CELLS_WIDTH, event.y, orig, coords_orig)
-                    logging.debug(f"{event.y=}, {self.winfo_height()=}")
-                    if event.y > self.winfo_height():
+                    clk_x, clk_y = self.cell_containing_coords(COL_CELLS_WIDTH, event_y, orig, coords_orig)
+                    logging.debug(f"{event_y=}, {self.winfo_height()=}")
+                    if event_y > self.winfo_height():
                         self.show_cell(clk_x, clk_y)
-                    event.x = COL_CELLS_WIDTH - 1
+                        self.after(1000, self.mouse_drag, None)
+                    event_x = COL_CELLS_WIDTH - 1
+                    event = tk.Event()
+                    event.x = event_x
+                    event.y = event_y
+                    event.state = SHIFT_PRESSED
                     self.mouse_click(event)
-                self.after(1000, lambda: self.event_generate("<B1-Motion>")) #, x=event.x, y=event.y))
             else:
+                # mouse over corners
                 viewport_x0, viewport_y0 = self.viewport_q1[:2]
+                event = tk.Event()
                 if self.selected_cells[::2] == (1, MAX_COLS):
+                    # Column selection
                     self.move_viewport(viewport_x0, viewport_y0 - 1)
                     event.x, event.y = COL_CELLS_WIDTH - 1, ROW_CELLS_HEIGHT
                     self.mouse_click(event)
                 elif self.selected_cells[1::2] == (1, MAX_ROWS):
+                    # Row selection
                     self.move_viewport(viewport_x0 - 1, viewport_y0)
                     event.x, event.y = COL_CELLS_WIDTH, ROW_CELLS_HEIGHT - 1
                     self.mouse_click(event)
@@ -1068,13 +1298,49 @@ class SheetUI(tk.Canvas):
 
 
 if __name__ == "__main__":
+    import inspect
     class SheetViewer(tk.Tk):
         def __init__(self):
             super().__init__()
+            self.f_rec = False
+            self.action_stack = []
             self.setGui()
             self.bind("<<ActiveCellChanged>>", self.on_active_cell_changed)
             self.bind("<<SelectedCellsChanged>>", self.on_selected_cells_changed)
             self.bind("<<errorReport>>", self.on_error_report)
+            self.bind("<<EventMonitor>>", self.event_monitor)
+            self.geometry("600x400")
+            self.monitor = self.bind("<<EventMonitor>>")
+
+        def event_monitor(self, event):
+            wdg = event.widget
+            wname = f"{wdg.winfo_parent()}.{wdg.winfo_name()}"
+            sevent = str(event)
+            logging.debug(f"****** Event: {sevent} *****")
+
+            # Action string
+            sevent = sevent.strip('<>').replace(' event ', ' ')
+            eseq, *kwargs = sevent.split()
+            kwargs = dict(item.split('=') for item in kwargs)
+            if eseq == 'Configure':
+                # Why?
+                # <Configure> is a system event (not a user event like <Button-1> or <KeyPress>).
+                # Tkinter/Tk will ignore attempts to generate it manually.
+                saction = f'self.geometry("{kwargs["width"]}x{kwargs["height"]}+0+0")'
+            else:
+                for key in set(['keysym', 'state']).intersection(kwargs.keys()):
+                    kwargs[key] = f"'{kwargs[key]}'"
+
+                if 'send_event' in kwargs:
+                    kwargs['sendevent'] = kwargs.pop('send_event')
+                    
+                kwargs = ', '.join(f'{k}={v}' for k, v in kwargs.items())
+                saction = f"self.nametowidget('{wname}').event_generate('<{eseq}>', {kwargs})"
+            logging.debug(f"****** Action: {saction} *****")
+            self.action_stack.append(saction)
+            # Get widget wit the name 'txt'
+            wdg = self.nametowidget('.errorfrm.txt')
+            wdg['text'] = saction.rsplit('.', 1)[-1]
 
         def on_active_cell_changed(self, event):
             active_cell = event.widget.active_cell
@@ -1095,13 +1361,13 @@ if __name__ == "__main__":
 
         def setGui(self):
             self.columnconfigure(0, weight=1)
-            self.rowconfigure(2, weight=1)  # Change to row 2 for the main frame
+            self.rowconfigure(3, weight=1)  # Change to row 2 for the main frame
 
             # --- Add labels at the top ---
 
             frame = ttk.Frame(self)
             frame.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 4))
-            vals = ["choose a test", "toggle_headings", "toggle_gridlines", "toggle_freeze_panes", "show_cell", "move_viewport"]
+            vals = ["choose an action", "validate_areas", "toggle_headings", "toggle_gridlines", "toggle_freeze_panes", "show_cell", "move_viewport"]
             self.cbox = cbox = ttk.Combobox(frame, name="cbox", values=vals, state="readonly")
             cbox.set(vals[0])  # Set default value
             cbox.pack(side="left")
@@ -1109,21 +1375,40 @@ if __name__ == "__main__":
             self.activeCell = ttk.Label(frame, text="Active Cell: ", background="magenta", font=("Arial", 10))
             self.activeCell.pack(side="left",expand=True, fill="x", padx=4)
             
-            self.errorReport = ttk.Label(self, text="", background="grey", font=("Arial", 14), foreground="white", anchor="w")
-            self.errorReport.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 4))
+            frame = ttk.Frame(self, name='actionfrm')
+            frame.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 4))
+            chkbtn = ttk.Checkbutton(frame, name="rec", text="Rec", style="Toolbutton", command=lambda: self.action_cmds('rec'))
+            chkbtn.pack(side="left")
+            # txt = ttk.Label(frame, name="txt", width=60, text='.....')
+            # txt.pack(side="left")
+            btn = ttk.Button(frame, text="run", command=lambda: self.action_cmds('step'))
+            btn.pack(side="left")
+            btn = ttk.Button(frame, text="all", command=lambda: self.action_cmds('run'))
+            btn.pack(side="left")
+            btn = ttk.Button(frame, text="save", command=lambda: self.action_cmds('save'))
+            btn.pack(side="right")
+            btn = ttk.Button(frame, text="load", command=lambda: self.action_cmds('load'))
+            btn.pack(side="right")
+
+            frame = ttk.Frame(self, name='errorfrm')
+            frame.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 4))
+            lbl = ttk.Label(frame, text="Last action:")
+            lbl.pack(side="left")
+            self.errorReport = ttk.Label(frame, name="txt", text="....", background="grey", font=("Arial", 10), foreground="white", anchor="w")
+            self.errorReport.pack(side="left", expand=tk.YES, fill=tk.X)
 
             # Create a frame to hold the canvas and scrollbars
             frame = ttk.Frame(self)
-            frame.grid(column=0, row=2, sticky=(tk.N, tk.W, tk.E, tk.S))
+            frame.grid(column=0, row=3, sticky=(tk.N, tk.W, tk.E, tk.S))
             frame.columnconfigure(0, weight=1)
             frame.rowconfigure(0, weight=1)
 
             # Create vertical and horizontal scrollbars
-            v_scroll = ttk.Scrollbar(frame, orient="vertical")
-            h_scroll = ttk.Scrollbar(frame, orient="horizontal")
+            v_scroll = ttk.Scrollbar(frame, name='vscroll', orient="vertical")
+            h_scroll = ttk.Scrollbar(frame, name='hscroll', orient="horizontal")
 
             # Create the SheetUI canvas
-            self.sheetui = sheetui = SheetUI(frame, bg=GRID_COLOR, 
+            self.sheetui = sheetui = SheetUI(frame, name='sheetui', bg=GRID_COLOR, 
                                     yscrollcommand=v_scroll.set, 
                                     xscrollcommand=h_scroll.set,
                                     scrollregion=(1, 1, MAX_COLS, MAX_ROWS)
@@ -1138,33 +1423,116 @@ if __name__ == "__main__":
             v_scroll.grid(row=0, column=1, sticky="ns")
             h_scroll.grid(row=1, column=0, sticky="ew")
 
+        def clean_slate(self):
+            # Put the canvas in a clean slate
+            x, y = self.sheetui.viewport_q3[2:]
+            self.sheetui.show_cell(x, y)
+            self.sheetui.validate_areas()
+            self.sheetui.validate_areas()
+        
+        def action_cmds(self, cmd):
+            self.sheetui.focus_set()
+            if cmd == 'save':
+                idir = os.path.dirname(os.path.abspath(__file__))
+                fname = filedialog.asksaveasfilename(
+                    parent=self,
+                    title="Save As",
+                    defaultextension=".tx",
+                    filetypes=[("Macro Files", "*.txt"), ("All Files", "*.*")],
+                    initialdir=os.path.join(os.getcwd(), "macros"),
+
+                )
+                if fname:
+                    if self.f_rec:
+                        wdg = self.nametowidget('.actionfrm.rec')
+                        wdg.click()
+                    # Save your data to 'filename'
+                    logging.debug(f"Saving to:{fname}")
+                    content = '\n'.join(self.action_stack)
+                    with open(fname, "w") as f:
+                        f.write(content)
+            elif cmd == 'load':
+                idir = os.path.dirname(os.path.abspath(__file__))
+                fname = filedialog.askopenfilename(
+                    parent=self,
+                    title="Open",
+                    defaultextension=".txt",
+                    filetypes=[("Macro Files", "*.txt"), ("All Files", "*.*")],
+                    initialdir=os.path.join(idir, "macros"),
+                )
+                if fname:
+                    # Load your data from 'filename'
+                    logging.debug(f"Loading from:{fname}")
+                    with open(fname, "r") as f:
+                        content = f.readlines()
+                    self.action_stack = content
+                    self.nametowidget('.errorfrm.txt')['text'] = content[-1]
+            elif cmd == 'rec':
+                wdg = self.nametowidget('.actionfrm.rec')
+                self.f_rec = not self.f_rec
+                binds = self.sheetui.bind()
+                if self.f_rec:
+                    for bind in binds:
+                        bnd_cb = self.sheetui.bind(bind)
+                        bnd_cb = '\n'.join([self.monitor, bnd_cb])
+                        self.sheetui.bind(bind, bnd_cb)
+                    wdg['text'] = "Stop"
+                else:
+                    for bind in binds:
+                        bnd_cb = self.sheetui.bind(bind)
+                        bnd_cb = bnd_cb.split('\n\n')[1]
+                        self.sheetui.bind(bind, bnd_cb)
+                    wdg['text'] = "Rec"
+                pass
+
+            elif cmd == 'run':
+                for action in self.action_stack[:-1]:
+                    exec(action)
+            elif cmd == 'step':
+                exec(self.action_stack[-1])
+
+
         def on_combobox_change(self, event):
-                test = self.cbox.get()
-                if test == 'toggle_headings':
+                fname = self.cbox.get()
+                if fname == 'validate_areas':
+                    msg1 = "Delete invalid areas (yes/no):"
+                elif fname == 'toggle_headings':
                     msg1 = "Toggle headings (yes/no):"
-                elif test == 'toggle_gridlines':
+                elif fname == 'toggle_gridlines':
                     msg1 = "Toggle gridlines (yes/no):"
-                elif test == 'toggle_freeze_panes':
+                elif fname == 'toggle_freeze_panes':
                     msg1 = "Toggle freeze panes (yes/no):"
-                elif test == 'show_cell':
+                elif fname == 'show_cell':
                     msg1 = "Enter the pivot cell coordinates (col, row):"
-                elif test == "move_viewport":
+                elif fname == "move_viewport":
                     msg1 = "Enter the pivot cell coordinates (delta_col, delta_row):"
                 else:
                     return
-                fnc = getattr(self.sheetui, test)
-                # display a message box to get  the pivot cell coordinates
-                answ = simpledialog.askstring(test, msg1, parent=self)
-                if answ:
-                    try:
-                        x, y = map(lambda w: int(w), answ.split(","))
-                        fnc(x, y)
-                        self.cbox.set("choose a test")
-                        self.sheetui.focus_set()  # Set focus back to the canvas
-                    except ValueError:
-                        print("Invalid input. Please enter parameters as integers separated with commas in the format 'x, y'.")
-                else:
-                    print("No input provided.")
+                fnc = getattr(self.sheetui, fname)
+                args = []
+                if inspect.signature(fnc).parameters:
+                    # display a message box to get  the pivot cell coordinates
+                    answ = simpledialog.askstring(fname, msg1, parent=self)
+                    if answ:
+                        try:
+                            args = list(map(lambda w: int(w), answ.split(",")))
+                        except ValueError:
+                            fnc = lambda *args: 1
+                            print("Invalid input. Please enter parameters as integers separated with commas in the format 'x, y'.")
+                    else:
+                        fnc = lambda *args: 2
+                        print("No input provided.")
+                sargs = ", ".join(map(str, args))
+                logging.debug(f"self.sheetui.{fname}({sargs})")
+                if self.f_rec:
+                    saction = f"self.sheetui.{fname}({sargs})"
+                    self.action_stack.append(saction)
+                    # Get widget wit the name 'txt'
+                    wdg = self.nametowidget('.errorfrm.txt')
+                    wdg['text'] = f"{fname}({sargs})"
+                fnc(*args)
+                self.cbox.set("choose an action")
+                self.sheetui.focus_set()
 
 
 
