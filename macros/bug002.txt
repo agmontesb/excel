@@ -1,0 +1,3 @@
+self.nametowidget('.!frame2.sheetui').event_generate('<KeyPress>', state=0x20000, keysym='Next', keycode=34, x=843, y=94, sendevent=True)
+self.nametowidget('.!frame2.sheetui').event_generate('<KeyPress>', state=0x20000, keysym='Next', keycode=34, x=843, y=94, sendevent=True)
+self.nametowidget('.!frame2.sheetui').event_generate('<KeyPress>', state=0x00004|0x40000, keysym='Left', keycode=37, x=843, y=94, sendevent=True)

@@ -1,0 +1,3 @@
+self.nametowidget('.!frame2.sheetui').event_generate('<ButtonRelease>', state=0x00100, num=1, x=201, y=90)
+self.sheetui.toggle_freeze_panes(3, 4)
+self.geometry("1349x602+0+0")
