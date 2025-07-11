@@ -4,6 +4,7 @@
     además de la activa'
 '''
 import os
+import inspect
 import tkinter as tk
 from tkinter import ttk
 from tkinter import simpledialog
@@ -48,6 +49,8 @@ def cell_content_gen(nquadrant: int, x: int, y: int) -> str:
 class SheetLook:
     def __init__(self, canvas: 'SheetUI', cell_content_gen: Callable[[int, int], str]):
         self.canvas = canvas
+        self.col_width = {4:40, 5:10, 6:50}
+        self.row_height = {6:50,}
 
         self.coords_vportq3 = (COL_CELLS_WIDTH, ROW_CELLS_HEIGHT)
         self.viewport_q3 = (1, 1, 1, 1)
@@ -104,7 +107,7 @@ class SheetLook:
                 else:
                     sel_y1 = max(acell_y0, pt.y)
             self.selected_cells = sel_x0, sel_y0, sel_x1, sel_y1
-            self.event_generate("<<SelectedCellsChanged>>")
+            self.canvas.event_generate("<<SelectedCellsChanged>>")
 
     def cell_coordinates(self, x: int, y:int, viewport:tuple[int, ...]=None, coords_viewport: tuple[int, int]=None) -> tuple[int, int, int, int]:
         """Calculates the coordinates of the cell based on the x and y position."""
@@ -112,9 +115,11 @@ class SheetLook:
             viewport = self.viewport_q1
         if coords_viewport is None:
             coords_viewport = self.coords_vportq1
-        x0 = coords_viewport[0] + (x - viewport[0]) * CELL_WIDTH
-        y0 = coords_viewport[1] + (y - viewport[1]) * CELL_HEIGHT
-        return (x0, y0, x0 + CELL_WIDTH, y0 + CELL_HEIGHT)
+        col_width = [self.col_width[ikey] for ikey in self.col_width if viewport[0] <= ikey <= (x - 1)]
+        x0 = coords_viewport[0] + (x - viewport[0] - len(col_width)) * CELL_WIDTH + sum(col_width)
+        row_height = [self.row_height[ikey] for ikey in self.row_height if viewport[1] <= ikey <= (y - 1)]
+        y0 = coords_viewport[1] + (y - viewport[1] - len(row_height)) * CELL_HEIGHT + sum(row_height)
+        return (x0, y0, x0 + self.col_width.get(x, CELL_WIDTH), y0 + self.row_height.get(y, CELL_HEIGHT))
     
     def area_coordinates(self, x0:int, y0:int, x1:int, y1:int) -> tuple[int, int, int, int]:
         nquadrant = self.cell_quadrant(x0, y0, isCoord=False)
@@ -134,16 +139,34 @@ class SheetLook:
         x1, y1 = self.cell_containing_coords(sel_x1 - 1, sel_y1 - 1, orig, coords_orig)
         return (x0, y0, x1, y1)
     
-    def cell_containing_coords(self, x:int, y:int, viewport:tuple[int, ...]=None, coords_viewport:tuple[int, int]=None) -> tuple[int, int]:
+    def cell_containing_coords(self, ptx:int, pty:int, viewport:tuple[int, ...]=None, coords_viewport:tuple[int, int]=None) -> tuple[int, int]:
         """Returns the cell address containing the given x and y screen coordinates."""
         if viewport is None:
             viewport = self.viewport_q1
         if coords_viewport is None:
             coords_viewport = self.coords_vportq1
-        xcell = int((x - coords_viewport[0]) // CELL_WIDTH + viewport[0])
-        ycell = int((y - coords_viewport[1]) // CELL_HEIGHT + viewport[1])
-        xcell = max(1, min(MAX_COLS, xcell))
-        ycell = max(1, min(MAX_ROWS, ycell))
+        xcell = viewport[0]
+        while True:
+            ptx0, ptx1 = self.cell_coordinates(xcell, 0, viewport, coords_viewport)[::2]
+            if ptx0 <= ptx < ptx1:
+                break
+            if ptx < ptx0:
+                xcell -= max((ptx0 - ptx) // CELL_WIDTH, 1)
+            elif ptx >= ptx1:
+                xcell += max((ptx - ptx1) // CELL_WIDTH, 1)
+
+        ycell = viewport[1]
+        while True:
+            pty0, pty1 = self.cell_coordinates(0, ycell, viewport, coords_viewport)[1::2]
+            if pty0 <= pty < pty1:
+                break
+            if pty < pty0:
+                ycell -= max((pty0 - pty) // CELL_HEIGHT, 1)
+            elif pty >= pty1:
+                ycell += max((pty - pty1) // CELL_HEIGHT, 1)
+            
+        xcell = max(1, min(MAX_COLS, int(xcell)))
+        ycell = max(1, min(MAX_ROWS, int(ycell)))
         return (xcell, ycell)
     
     def cell_quadrant(self, x: int, y:int, isCoord: bool=True) -> int:
@@ -211,7 +234,7 @@ class SheetLook:
             # Move the viewport dx pixel to the left
             items = self.canvas.find_enclosed(self.coords_vportq1[0] - 1, clinf_y - 1, linf_x + 1, lsup_y + 1)
             for item in items:
-                self.move(item, -dx, 0)
+                self.canvas.move(item, -dx, 0)
             viewport_x0 = x0
             area =(self.coords_vportq1[0], clinf_y, self.coords_vportq1[0] - dx, lsup_y)
             self.canvas.tag_area(*area, tag="invalid_area")
@@ -1360,10 +1383,17 @@ class SheetViewer(tk.Tk):
             self.sheetui.focus_set()
 
 def main():
-    import inspect
-    
     root = SheetViewer()
     root.mainloop()
 
+def look():
+    look = SheetLook(None, None)
+    for x in range(1, 10):
+        x0, x1 = look.cell_coordinates(x, 1)[::2]
+        xmed = (x0 + x1) // 2
+        col, row = look.cell_containing_coords(xmed, 30)
+        print(f'{x=}, ({x0=}, {x1=}), width={x1-x0}, {col=}')
+
 if __name__ == "__main__":
     main()
+    # look()
