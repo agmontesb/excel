@@ -558,7 +558,7 @@ class SheetUI(tk.Canvas):
                 cx0 = x1
             assert xcell >= MAX_COLS or cx0 == cx1
             logging.debug(f"Last column draw {xcell}")
-            self.itemconfig(item, tags="cols_drawn")
+            self.itemconfig(item, tags="cols_drawn", state="hidden")
             pass
 
         # Draw row headings
@@ -579,7 +579,7 @@ class SheetUI(tk.Canvas):
                 cy0 = y1
             assert ycell >= MAX_ROWS or cy0 == cy1
             logging.debug(f"Last row draw {ycell}")
-            self.itemconfig(item, tags="rows_drawn")
+            self.itemconfig(item, tags="rows_drawn", state="hidden")
             pass
 
         # Draw cells content
@@ -604,9 +604,9 @@ class SheetUI(tk.Canvas):
                         self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
                         y0 = y1
                     cx0 = x1
-            self.itemconfig(item, tags="cells_drawn")
+            self.itemconfig(item, tags="cells_drawn", state="hidden")
             pass
-        [self.tag_lower(tag) for tag in ("cols_drawn", "rows_drawn", "cells_drawn")]
+        # [self.tag_lower(tag) for tag in ("cols_drawn", "rows_drawn", "cells_drawn")]
         if logger.isEnabledFor(logging.DEBUG):
             logging.debug(sorted(Counter([self.itemcget(item, 'tags') for item in self.find_all()]).items()))
         pass
@@ -620,8 +620,9 @@ class SheetUI(tk.Canvas):
                 y0, y1 = min(lsup_y, max(linf_y, y0)), max(linf_y, min(y1, lsup_y))
             return x0, y0, x1, y1
         self.delete("selected_cells")
-        winfo_width, winfo_height = self.efective_width(), self.efective_height()
-        clipping_rect = (self.coords_vportq3[0], self.coords_vportq3[1], winfo_width, winfo_height)
+        clipping_rect = self.look.area_coordinates(*self.viewport_q3[:2], *self.viewport_q1[2:])
+        # winfo_width, winfo_height = self.efective_width(), self.efective_height()
+        # clipping_rect = (self.coords_vportq3[0], self.coords_vportq3[1], winfo_width, winfo_height)
 
         x0, y0, x1, y1 = self.area_coordinates(*self.selected_cells)
         sel_x0, sel_y0, sel_x1, sel_y1 = clip_rectangle(x0, y0, x1, y1, clipping_rect)
@@ -683,6 +684,113 @@ class SheetUI(tk.Canvas):
             linf_y = self.coords_vportq3[1] - 2 * ROW_CELLS_HEIGHT
             self.create_line(coord_acell_x, linf_y, coord_acell_x, winfo_height, fill="black", tags="freeze_line")
 
+    def set_rows_height(self, height):
+        """Sets the height of the rows in the range y0:y1 and returns the change in height"""
+        height = max(-1, height)
+        sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
+        if (sel_x0, sel_x1) != (1, MAX_COLS):
+            return
+        linf_y, lsup_y = self.look.area_coordinates(sel_x0, sel_y0, sel_x1, sel_y1)[1::2]
+        clinf_x = self.coords_vportq3[0] - COL_CELLS_WIDTH
+        vplsup_x0, vplsup_y0 = self.cell_coordinates(*self.viewport_q1[2:])[2:]
+        to_delete = (clinf_x - 1, linf_y - 1, vplsup_x0 + 1, lsup_y + 1)
+        to_move = (clinf_x - 1, linf_y - 1, vplsup_x0 + 1, vplsup_y0 + 1)
+
+        delta = self.look.set_dimension(sel_y0, sel_y1, height, axis=1)
+
+        self.delete(*self.find_enclosed(*to_delete))
+        for item in self.find_enclosed(*to_move):
+            self.move(item, 0, delta)
+
+        area = clinf_x, linf_y, vplsup_x0, lsup_y + delta
+        self.tag_area(*area, tag="invalid_area")
+        logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+
+        vplsup_x1, vplsup_y1 = self.look.cell_coordinates(*self.viewport_q1[2:])[2:]
+        assert vplsup_x0 == vplsup_x1
+        if vplsup_y0 + delta > vplsup_y1:
+            to_delete = (clinf_x - 1, vplsup_y1 - 1, vplsup_x1 + 1, vplsup_y0 + delta + 1)
+            self.delete(*self.find_enclosed(*to_delete))
+        else:
+            area = (clinf_x, vplsup_y0 + delta, vplsup_x1, vplsup_y1)
+            self.tag_area(*area, tag="invalid_area")
+            logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+        self.setGUI()
+        self.set_active_cell()
+
+    def insert_rows(self):
+        """Inserts (y1 - y0) headings with default dimension before heading y0."""
+        sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
+        if (sel_x0, sel_x1) != (1, MAX_COLS):
+            return
+        linf_y, lsup_y = self.look.area_coordinates(sel_x0, sel_y0, sel_x1, sel_y1)[1::2]
+        clinf_x = self.coords_vportq3[0] - COL_CELLS_WIDTH
+        vplsup_x0, vplsup_y0 = self.cell_coordinates(*self.viewport_q1[2:])[2:]
+        to_delete = (clinf_x - 1, linf_y - 1, vplsup_x0 + 1, lsup_y + 1)
+        to_move = (clinf_x - 1, linf_y - 1, vplsup_x0 + 1, vplsup_y0 + 1)
+
+        delta = self.look.insert(sel_y0, sel_y1, axis=1)
+
+        self.delete(*self.find_enclosed(*to_delete))
+        for item in self.find_enclosed(*to_move):
+            self.move(item, 0, delta)
+
+        area = clinf_x, linf_y, vplsup_x0, lsup_y + delta
+        self.tag_area(*area, tag="invalid_area")
+        logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+
+        vplsup_x1, vplsup_y1 = self.look.cell_coordinates(*self.viewport_q1[2:])[2:]
+        assert vplsup_x0 == vplsup_x1
+        to_delete = (clinf_x - 1, vplsup_y1 - 1, vplsup_x1 + 1, vplsup_y0 + delta + 1)
+        self.delete(*self.find_enclosed(*to_delete))
+
+        to_delete = (clinf_x - 1, linf_y - 1, self.coords_vportq3[0] + 1, vplsup_y1 + 1)
+        self.delete(*self.find_enclosed(*to_delete))
+
+        area = (clinf_x, linf_y, self.coords_vportq3[0], vplsup_y1)
+        self.tag_area(*area, tag="invalid_area")
+
+        self.setGUI()
+        self.set_active_cell()
+
+    def delete_rows(self):
+        """Deletes the rows in the range y0:y1 and returns the change in height."""
+        sel_x0, sel_y0, sel_x1, sel_y1 = self.selected_cells
+        if (sel_x0, sel_x1) != (1, MAX_COLS):
+            return
+        linf_y, lsup_y = self.look.area_coordinates(sel_x0, sel_y0, sel_x1, sel_y1)[1::2]
+        clinf_x = self.coords_vportq3[0] - COL_CELLS_WIDTH
+        vplsup_x0, vplsup_y0 = self.cell_coordinates(*self.viewport_q1[2:])[2:]
+        # Marks for deletion the rows from sel_y0 to sel_y1
+        to_delete = (clinf_x - 1, linf_y - 1, vplsup_x0 + 1, lsup_y + 1)
+
+        # MArks for movement the rows from sel_y1 < y < viewport_y1
+        to_move = (clinf_x - 1, lsup_y - 1, vplsup_x0 + 1, vplsup_y0 + 1)
+        delta = self.look.delete(sel_y0, sel_y1, axis=1)
+
+        self.delete(*self.find_enclosed(*to_delete))
+        for item in self.find_enclosed(*to_move):
+            self.move(item, 0, delta)
+
+        # Updates the coordinates for the viewport brcorner 
+        vplsup_x1, vplsup_y1 = self.look.cell_coordinates(*self.viewport_q1[2:])[2:]
+        assert vplsup_x0 == vplsup_x1
+
+        # Deletes the row headings from linf_y to vplsup_y1 and invalidates the area
+        area = (clinf_x, linf_y, self.coords_vportq1[0] + 1, vplsup_y1 + 1)
+        self.delete(*self.find_enclosed(*area))
+        area = (clinf_x, linf_y, self.coords_vportq1[0], vplsup_y1)
+        self.tag_area(*area, tag="invalid_area")
+        logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+
+        # Invalidates the area leave blank by the move of cell content move previously.
+        area = (clinf_x, vplsup_y0 + delta, vplsup_x1, vplsup_y1)        
+        self.tag_area(*area, tag="invalid_area")
+        logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+
+        self.setGUI()
+        self.set_active_cell()
+
     def set_cols_width(self, width):
         """Sets the width of the columns in the range x0:x1 and returns the change in width."""
         width = max(-1, width)
@@ -708,8 +816,8 @@ class SheetUI(tk.Canvas):
         vplsup_x1, vplsup_y1 = self.look.cell_coordinates(*self.viewport_q1[2:])[2:]
         assert vplsup_y0 == vplsup_y1
         if vplsup_x0 + delta > vplsup_x1:
-            to_delete = (vplsup_x1 - 1, clinf_y, vplsup_x0 + delta + 1, vplsup_y1 + 1)
-            self.delete(*to_delete)
+            to_delete = (vplsup_x1 - 1, clinf_y - 1, vplsup_x0 + delta + 1, vplsup_y1 + 1)
+            self.delete(*self.find_enclosed(*to_delete))
         else:
             area = (vplsup_x0 + delta, clinf_y, vplsup_x1, vplsup_y1)
             self.tag_area(*area, tag="invalid_area")
@@ -787,28 +895,27 @@ class SheetUI(tk.Canvas):
         self.setGUI()
         self.set_active_cell()
 
-
-
     def redraw_sheet(self, event=None, width=None, height=None):
         "Redraws the sheetui when the window is resized or needs updating."
-        winfo_width = (width or self.winfo_width()) + int(self.f_headings) * COL_CELLS_WIDTH
-        winfo_height = (height or self.winfo_height()) + int(self.f_headings) * ROW_CELLS_HEIGHT
-        viewport_x1, viewport_y1 = self.cell_containing_coords(winfo_width, winfo_height)
-        self.look.viewport_q1 = self.viewport_q1[:2] + (viewport_x1, viewport_y1)
-
-        clsup_x, clsup_y =self.cell_coordinates(viewport_x1, viewport_y1)[2:]
 
         if self.find_withtag("background"):
             bg_coords = self.coords("background")
         else:
-            x0, x1 = self.coords_vportq3[0] - COL_CELLS_WIDTH, self.coords_vportq3[0]
-            y0, y1 = self.coords_vportq3[1] - ROW_CELLS_HEIGHT, self.coords_vportq3[1]
-            bg_coords = (x0, y0, x1, y1)
+            bgc_x0, bgc_x1 = self.coords_vportq3[0] - COL_CELLS_WIDTH, self.coords_vportq3[0]
+            bgc_y0, bgc_y1 = self.coords_vportq3[1] - ROW_CELLS_HEIGHT, self.coords_vportq3[1]
+            bg_coords = (bgc_x0, bgc_y0, bgc_x1, bgc_y1)
             self.create_rectangle(*bg_coords, fill="green", outline="black", tags="corner")
             self.create_rectangle(*bg_coords, fill="white", outline="black", tags="background")
         
-        x0, y0, x1, y1 = bg_coords
+        bgc_x0, bgc_y0, bgc_x1, bgc_y1 = bg_coords
 
+        winfo_width = self.efective_width()
+        winfo_height = self.efective_height()
+        viewport_x1, viewport_y1 = self.cell_containing_coords(winfo_width, winfo_height)
+        self.look.viewport_q1 = self.viewport_q1[:2] + (viewport_x1, viewport_y1)
+
+        clsup_x, clsup_y =self.cell_coordinates(viewport_x1, viewport_y1)[2:]
+        
         # Adjust the gridlines to the new viewport
         items = self.find_withtag("hgrid_lines") + self.find_withtag("vgrid_lines") + self.find_withtag("freeze_line")
         for item in items:
@@ -821,27 +928,54 @@ class SheetUI(tk.Canvas):
                 self.coords(item, gx0, gy0, gx1, clsup_y)
 
         items = self.find_withtag("cells_drawn")
-        bflag = bool(items) and not self.find_below("background")
+        bflag = bool(items) and self.itemcget(items[0], "state") == "normal"
         if not bflag:
             # Columns to draw
-            area = (x1, self.coords_vportq3[1] - ROW_CELLS_HEIGHT, clsup_x, self.coords_vportq3[1])
-            self.tag_area(*area, tag="invalid_area")
-            logging.debug(f"Invalidated area: {self.area_cells(*area)}")
-            # Rows to draw
-            area = (self.coords_vportq3[0] - COL_CELLS_WIDTH, y1, self.coords_vportq3[0], clsup_y)
-            self.tag_area(*area, tag="invalid_area")
-            logging.debug(f"Invalidated area: {self.area_cells(*area)}")
-            # Cells to draw
-            areas = [(x1, y1, clsup_x, clsup_y)]
-            if y1 - y0 > ROW_CELLS_HEIGHT:
-                areas.append((x1, self.coords_vportq3[1], clsup_x, y1))
-            if x1 - x0 > COL_CELLS_WIDTH:
-                areas.append((self.coords_vportq3[0], y1, x1, clsup_y))
-            for area in areas:
+            if bgc_x1 < clsup_x:
+                area = (bgc_x1, self.coords_vportq3[1] - ROW_CELLS_HEIGHT, clsup_x, self.coords_vportq3[1])
                 self.tag_area(*area, tag="invalid_area")
                 logging.debug(f"Invalidated area: {self.area_cells(*area)}")
-            self.tag_raise("invalid_area")
-            self.setGUI()
+            else:
+                area = (clsup_x, self.coords_vportq3[1] - ROW_CELLS_HEIGHT, bgc_x1, self.coords_vportq3[1])
+                self.delete(*self.find_enclosed(*area))
+            # Rows to draw
+            if bgc_y1 < clsup_y:
+                area = (self.coords_vportq3[0] - COL_CELLS_WIDTH, bgc_y1, self.coords_vportq3[0], clsup_y)
+                self.tag_area(*area, tag="invalid_area")
+                logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+            else:
+                area = (self.coords_vportq3[0] - COL_CELLS_WIDTH, clsup_y, self.coords_vportq3[0], bgc_y1)
+                self.delete(*self.find_enclosed(*area))
+
+            # Cells to draw
+            areas = []
+            if (bgc_x1, bgc_y1) < (clsup_x, clsup_y):
+                areas.append((bgc_x1, bgc_y1, clsup_x, clsup_y))
+            else:
+                area = (clsup_x - 1, clsup_y - 1, bgc_x1 + 1, bgc_y1 + 1)
+                self.delete(*self.find_enclosed(*area))
+
+            if bgc_x1 < clsup_x:
+                if bgc_y1 - bgc_y0 > ROW_CELLS_HEIGHT:  
+                    areas.append((bgc_x1, self.coords_vportq3[1], clsup_x, bgc_y1))
+            else:
+                area = (clsup_x - 1, self.coords_vportq3[1] -1, bgc_x1 + 1, bgc_y1 + 1)
+                self.delete(*self.find_enclosed(*area))
+                
+            if bgc_y1 < clsup_y:
+                if bgc_x1 - bgc_x0 > COL_CELLS_WIDTH:
+                    areas.append((self.coords_vportq3[0], bgc_y1, bgc_x1, clsup_y))
+            else:
+                area = (self.coords_vportq3[0] - 1, clsup_y - 1, bgc_x1 + 1, bgc_y1 + 1)
+                self.delete(*self.find_enclosed(*area))
+            if areas:
+                for area in areas:
+                    self.tag_area(*area, tag="invalid_area")
+                    logging.debug(f"Invalidated area: {self.area_cells(*area)}")
+                self.tag_raise("invalid_area")
+                self.setGUI()
+            else:
+                self.coords("background", bgc_x0, bgc_y0, clsup_x, clsup_y)
 
             self.xview('scroll', '-1', 'units')
             self.yview('scroll', '-1', 'units')
@@ -904,14 +1038,13 @@ class SheetUI(tk.Canvas):
         pass
 
     def toggle_areas_drawn(self):
-        if (items := self.find_below("background")) and self.itemcget(items[0], "tags").endswith("_drawn"):
-            self.tag_raise("cells_drawn")
-            self.tag_raise("cols_drawn")
-            self.tag_raise("rows_drawn")
-        else:
-            self.tag_lower("cells_drawn")
-            self.tag_lower("cols_drawn")
-            self.tag_lower("rows_drawn")
+        drawn = list(map(self.find_withtag, ("cells_drawn", "cols_drawn", "rows_drawn")))
+        for items in drawn:
+            if items:
+                ndx = int(self.itemcget(items[0], "state") == "normal")
+                state = ("normal", "hidden")[ndx]
+                for item in items:
+                    self.itemconfig(item, state=state)
         pass
 
     def toggle_headings(self):
@@ -1301,8 +1434,12 @@ class SheetViewer(tk.Tk):
         self.f_rec = False
         self.action_stack = []
         self.fnc_to_test = [
-            "choose an action", "delete_columns", "insert_columns", "set_cols_width", "toggle_areas_drawn", "toggle_headings", 
-            "toggle_gridlines", "toggle_freeze_panes", "show_cell", "move_viewport"
+            "choose an action", 
+            "delete_rows", "insert_rows", "set_rows_height", 
+            "delete_columns", "insert_columns", "set_cols_width", 
+            "toggle_areas_drawn", "toggle_headings", 
+            "toggle_gridlines", "toggle_freeze_panes", 
+            "show_cell", "move_viewport"
         ]
         self.setGui()
         self.bind("<<ActiveCellChanged>>", self.on_active_cell_changed)
@@ -1317,7 +1454,7 @@ class SheetViewer(tk.Tk):
         wname = f"{wdg.winfo_parent()}.{wdg.winfo_name()}"
         sevent = str(event)
         logging.debug(f"****** Event: {sevent} *****")
-
+        tk.Event
         # Action string
         sevent = sevent.strip('<>').replace(' event ', ' ')
         eseq, *kwargs = sevent.split()
@@ -1331,18 +1468,21 @@ class SheetViewer(tk.Tk):
             else:
                 saction = f'self.state("normal")\nself.geometry("{self.geometry()}")'
         else:
-            mods = ('Shift', 'Lock', 'Control', 
-                    'Mod1', 'Mod2', 'Mod3', 'Mod4', 'Mod5',
-                    'Button1', 'Button2', 'Button3', 'Button4', 'Button5'
-                )
-            val = []
-            for mod in  kwargs['state'].split('|'):
-                try:
-                    n = mods.index(mod)
-                    val.append(f"0x{1 << n:05x}")
-                except ValueError:
-                    val.append(mod)
-            kwargs['state'] = '|'.join(val)
+            if eseq in ('ButtonPress', 'ButtonRelease',):
+                eseq = f"{eseq}-{kwargs.pop('num')}"
+            if 'state' in kwargs:
+                mods = ('Shift', 'Lock', 'Control', 
+                        'Mod1', 'Mod2', 'Mod3', 'Mod4', 'Mod5',
+                        'Button1', 'Button2', 'Button3', 'Button4', 'Button5'
+                    )
+                val = []
+                for mod in  kwargs['state'].split('|'):
+                    try:
+                        n = mods.index(mod)
+                        val.append(f"0x{1 << n:05x}")
+                    except ValueError:
+                        val.append(mod)
+                kwargs['state'] = '|'.join(val)
 
             for key in set(['keysym',]).intersection(kwargs.keys()):
                 kwargs[key] = f"'{kwargs[key]}'"
@@ -1448,11 +1588,11 @@ class SheetViewer(tk.Tk):
             idir = os.path.dirname(os.path.abspath(__file__))
             fname = filedialog.asksaveasfilename(
                 parent=self,
-                title="Save As",
+                title="Save As", 
                 defaultextension=".tx",
                 filetypes=[("Macro Files", "*.txt"), ("All Files", "*.*")],
                 initialdir=os.path.join(os.getcwd(), "macros"),
-
+                initialfile="current_bug.txt"
             )
             if fname:
                 if self.f_rec:
@@ -1499,6 +1639,7 @@ class SheetViewer(tk.Tk):
 
         elif cmd == 'run':
             for action in self.action_stack[:-1]:
+                logging.debug(f"Executing action: {action}")
                 exec(action)
         elif cmd == 'step':
             exec(self.action_stack[-1])
@@ -1510,35 +1651,16 @@ class SheetViewer(tk.Tk):
 
     def on_combobox_change(self, event):
             fname = self.cbox.get()
-            if fname == 'delete_columns':
-                msg1 = "Delete columns (x):"
-            elif fname == 'insert_columns':
-                msg1 = "Insert columns (x):"
-            elif fname == 'set_cols_width':
-                msg1 = "Enter the width of the columns (pixels):"
-            elif fname == 'toggle_areas_drawn':
-                msg1 = "Toggle drawn areas (yes/no):"
-            elif fname == 'toggle_headings':
-                msg1 = "Toggle headings (yes/no):"
-            elif fname == 'toggle_gridlines':
-                msg1 = "Toggle gridlines (yes/no):"
-            elif fname == 'toggle_freeze_panes':
-                msg1 = "Toggle freeze panes (yes/no):"
-            elif fname == 'show_cell':
-                msg1 = "Enter the pivot cell coordinates (col, row):"
-            elif fname == "move_viewport":
-                msg1 = "Enter the pivot cell coordinates (delta_col, delta_row):"
-            else:
-                return
             fnc = getattr(self.sheetui, fname)
             args = []
-            if inspect.signature(fnc).parameters:
+            if (sig:=inspect.signature(fnc)).parameters:
                 # display a message box to get  the pivot cell coordinates
+                msg1 = f"{fname} requires parameters.\n {fname}({', '.join(p.name for p in sig.parameters.values())}) \nPlease enter parameters as integers separated with commas in the format 'x, y'."
                 answ = simpledialog.askstring(fname, msg1, parent=self)
                 if answ:
                     try:
                         args = list(map(lambda w: int(w), answ.split(",")))
-                    except ValueError:
+                    except ValueError:  
                         fnc = lambda *args: 1
                         print("Invalid input. Please enter parameters as integers separated with commas in the format 'x, y'.")
                 else:
