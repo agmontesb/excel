@@ -1,3 +1,4 @@
+import ast
 import sys
 import traceback
 import tkinter as tk
@@ -11,8 +12,8 @@ class Frontend(tk.Frame):
 
         self.input = wdg = tk.Text(self, name='input', height=10, font=('Courier', 11))
         wdg.pack(side=tk.BOTTOM, fill=tk.X)
-        wdg.bind("<Return>", self.on_input)
-        wdg.bind("<Control-Return>", self.on_input)
+        wdg.bind("<Return>", self.on_input_return)
+        wdg.bind("<Control-Return>", self.on_input_return)
         wdg.bind('<BackSpace>', self.backspace)
         wdg.bind('<Delete>', self.delete)
         wdg.bind('<Up>', self.history)
@@ -33,11 +34,19 @@ class Frontend(tk.Frame):
         wdgo.tag_config('input', background='lightblue', borderwidth=0)
         wdgo.tag_config('output', foreground='black')
         wdgo.tag_config('out_id', foreground='green', lmargin1=20)
+        wdgo.tag_config('hide', elide=True)
+        wdgo.tag_config('elipsis', foreground='blue', background='white', underline=True)
+        wdgo.tag_bind('elipsis', '<Button-1>', self.on_active_cell)
 
         wdgo.bind('<Up>', self.on_active_cell)
         wdgo.bind('<Down>', self.on_active_cell)
+        wdgo.bind('<Home>', self.on_active_cell)
+        wdgo.bind('<End>', self.on_active_cell)
+        wdgo.bind('<Delete>', self.on_active_cell)
+
         wdgo.bind('<Button-1>', self.on_active_cell)
-        wdg.bind('<FocusIn>', self.on_focus)
+        wdgo.bind('<Return>', self.on_output_return)
+        # wdg.bind('<FocusIn>', self.on_focus)
         # wdgo.bind('<FocusOut>', self.on_focus)
         wdg.focus_set()
 
@@ -50,6 +59,32 @@ class Frontend(tk.Frame):
         self.history_index = len(self.history_list)
         self.prompt = lambda: f"In [{len(self.history_list) + 1}]: "
         wdg.insert(tk.INSERT, self.prompt())
+
+    def on_output_return(self, event: tk.Event):
+        wdg:tk.Text = event.widget
+        isCtrlPressed = event.state & 0x00004
+        isShiftPressed = event.state & 0x00001
+        isAltPressed = event.state & 0x20000
+        if isCtrlPressed or isAltPressed:
+            ranges = wdg.tag_ranges('active_cell')
+            if not ranges:
+                return 'break'
+            output = []
+            index1, index2 = ranges
+            while ranges:= wdg.tag_nextrange('input', index1, index2):
+                index0, index1 = ranges
+                output.append(wdg.get(index0, index1))
+            if output:
+                output = ''.join(output).rstrip()
+                if isCtrlPressed:
+                    self.exec_code(output, toArchive=False)
+                elif isAltPressed:
+                    self.exec_code(output, toArchive=True)
+                return 'break'
+        keysym = 'Up' if isShiftPressed else 'Down'
+        event.state = 0
+        event.keysym = keysym
+        return self.on_active_cell(event)
 
     def exec_code(self, text, toArchive=False):
         wdg = self.input
@@ -70,6 +105,16 @@ class Frontend(tk.Frame):
             print(wdg.index(tk.INSERT), wdg.index(tk.END))
         pass
 
+    def output_visible_ranges(self):
+        wdg = self.output
+        ranges = wdg.tag_ranges('hide')
+        if ranges:
+            ranges = ('1.0',) + ranges + ('end',)
+        else:
+            ranges = ('1.0', tk.END)
+        index_pairs = list(zip(ranges[::2], ranges[1::2]))
+        return index_pairs
+
     def on_active_cell(self, event: tk.Event):
         wdg: tk.Text = event.widget
         keysym = event.keysym
@@ -88,14 +133,40 @@ class Frontend(tk.Frame):
                 wdg.tag_remove('active_cell', crange[0], crange[-1])
                 for tag in ('active_cell', tk.SEL)[:shift_pressed + 1]:
                     wdg.tag_add(tag, *cell_range)
+                ndx = cell_range[bflag]
+                wdg.see(ndx)
             return 'break'
+        elif keysym in ('Home', 'End'):
+            ndx = ('1.0', tk.END)[keysym == 'End']
+            wdg.see(ndx)
+            return 'break'
+        elif keysym == 'Delete':
+            ranges = wdg.tag_ranges(tk.SEL)
+            if ranges:
+                index1, index2 = str(ranges[0]), str(ranges[-1])
+                lmark, rmark = f"M{index1.replace('.', '_')}", f"M{index2.replace('.', '_')}"
+                wdg.mark_set(lmark, index1)
+                wdg.mark_set(rmark, index2)
+                wdg.mark_gravity(lmark, tk.LEFT)
+                wdg.tag_remove(tk.SEL, index1, index2)
+                wdg.tag_add('hide', index1, index2)
+                wdg.insert(index1, f'...{(index1, index2)}\n', ('elipsis',))
         elif event.type.name == 'ButtonPress' and event.num == 1:
             ndx = wdg.index(f"@{event.x},{event.y}")
-            if 'cell' in wdg.tag_names(ndx):
+            names = wdg.tag_names(ndx)
+            if 'cell' in names:
                 cell_range = wdg.tag_prevrange('cell', ndx)
                 wdg.tag_remove('active_cell', '1.0', tk.END)
                 wdg.tag_add('active_cell', *cell_range)
                 wdg.focus_set()
+            elif 'elipsis' in names:
+                index1, index2 = wdg.tag_prevrange('elipsis', ndx)
+                txt = wdg.get(index1, index2)
+                wdg.delete(index1, index2)
+                lmark, rmark = wdg.mark_previous(tk.CURRENT), wdg.mark_next(tk.CURRENT)
+                wdg.tag_remove('hide', lmark, rmark)
+                wdg.mark_unset(lmark)
+                wdg.mark_unset(rmark)
             return 'break'
         pass
 
@@ -120,8 +191,8 @@ class Frontend(tk.Frame):
         wdg.mark_set(tk.INSERT, 'insert-1c')
         return 'break'
 
-    def clear_prompt(self, event: tk.Event):
-        wdg = event.widget
+    def clear_prompt(self, event: tk.Event=None):
+        wdg = event.widget if event else self.input
         wdg.delete('1.0', tk.END)
         wdg.insert(tk.INSERT, self.prompt())
         return 'break'
@@ -172,7 +243,7 @@ class Frontend(tk.Frame):
         wdg.mark_set(tk.INSERT, f'{last_line}.end')
         return 'break'
 
-    def on_input(self, event: tk.Event):
+    def on_input_return(self, event: tk.Event):
         wdg:tk.Text = event.widget
         currentline, endline = map(lambda x: int(wdg.index(x).split('.')[0]), (tk.INSERT, tk.END))
         with_control = event.state & 0x4
@@ -189,7 +260,7 @@ class Frontend(tk.Frame):
         return self.clear_prompt(event)
 
     def pythonize(self, raw_text):
-        n = len(self.prompt())
+        n = raw_text.index(': ') + 2
         lines = [x[n:] for x in raw_text.splitlines()]
         first_indent = len(lines[0]) - len(lines[0].lstrip())
         if first_indent:
@@ -201,8 +272,9 @@ class Frontend(tk.Frame):
                 lines.append(last_line)
                 last_line = ''
         if last_line:
-            prefix, suffix = (last_line.split(' = ', 1) + [''])[:2]
-            if suffix and '(' not in prefix:
+            try:
+                isinstance(ast.parse(last_line, mode='eval'), ast.Expression)
+            except SyntaxError:
                 lines.append(last_line)
                 last_line = ''
         return '\n'.join(lines), last_line
@@ -210,11 +282,13 @@ class Frontend(tk.Frame):
     def archive(self):
         wdg = self.input
         raw_text = wdg.get("1.0", tk.END)
-        wdg.delete("1.0", tk.END)
+        if raw_text[len(self.prompt()):] == '\n':
+            return 'break'
         self.history_list.append(raw_text.strip())
         self.history_index = 1 + len(self.history_list)
-        wdg.insert(tk.INSERT, self.prompt())
-        # text = self.pythonize(raw_text)
+        self.clear_prompt()
+        # wdg.delete("1.0", tk.END)
+        # wdg.insert(tk.INSERT, self.prompt())
         self.write_input(raw_text)
         if not raw_text[len(self.prompt()):]:
             self.destroy()
@@ -248,10 +322,11 @@ class Frontend(tk.Frame):
                 exc_type, exc_value, exc_traceback = sys.exc_info()
                 traceback.print_exception(exc_type, exc_value, exc_traceback, file=sys.stderr)
             else:
-                prefix = self.history_list[-1].split(': ', 1)[0].replace('In ', 'Out') + ': '
-                txt = prefix + str(answ) + '\n'
-                self.write('\n', tags=('inner_separator', 'cell'))
-                self.write_output(txt)
+                if answ is not None:
+                    prefix = self.history_list[-1].split(': ', 1)[0].replace('In ', 'Out') + ': '
+                    txt = prefix + str(answ) + '\n'
+                    self.write('\n', tags=('inner_separator', 'cell'))
+                    self.write_output(txt)
         finally:
             sys.stdout = sout
             sys.stderr = serr
