@@ -3,8 +3,10 @@
     que consiste en un área de celdas y una barra de estado que permite cambiar a otras hojas de trabajo '
     además de la activa'
 '''
+import collections
 import os
 import inspect
+import queue
 import tkinter as tk
 from tkinter import ttk
 from tkinter import simpledialog
@@ -12,9 +14,13 @@ from tkinter import filedialog
 from contextlib import contextmanager
 from types import SimpleNamespace
 from collections import Counter
+from enum import Flag, auto
 
 import logging
 from typing import Callable, Literal
+
+from frontend import Frontend
+
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -35,6 +41,13 @@ CELL_HEIGHT = ROW_CELLS_HEIGHT  # Default height for cells in the worksheet
 GRID_COLOR = "lightgray"  # Default grid color for the worksheet
 
 
+class SheetState(Flag):
+    NONE = 0
+    FREEZE = auto()
+    GRIDLINES = auto()
+    HEADINGS = auto()
+
+
 def cell_content_gen(nquadrant: int, x: int, y: int) -> str:
     """Generates the content for a cell based on its quadrant and cell coordinates."""
     if nquadrant == 1:
@@ -48,7 +61,12 @@ def cell_content_gen(nquadrant: int, x: int, y: int) -> str:
 
 
 class SheetLook:
-    def __init__(self, canvas: 'SheetUI', cell_content_gen: Callable[[int, int], str]):
+    def __init__(self, canvas: 'SheetUI', cell_content_gen: Callable[[int, int], str] = cell_content_gen):
+        self._winfo_width = None
+        self._winfo_height = None
+        self.flags = SheetState.GRIDLINES | SheetState.HEADINGS
+        self.cell_content = cell_content_gen
+
         self.canvas = canvas
         self.headings_dim = {}
         self.headings_hided = {}
@@ -59,8 +77,44 @@ class SheetLook:
         self.viewport_q1 = (1, 1, 1, 1)                                 # Default pivot cell
         self.active_cell = self.viewport_q1[:2]                         # Variable to store the active cell     
         self.selected_cells = (*self.active_cell, *self.active_cell)    # Variable to store the selected cell
-        self.cell_content = cell_content_gen
         pass
+
+    @property
+    def winfo_width(self):
+        return self._winfo_width
+    
+    @winfo_width.setter
+    def winfo_width(self, value):
+        self._winfo_width = value
+        xcell = self.tag_id(value, axis=0)
+        self.viewport_q1 = (*self.viewport_q1[:2], xcell, self.viewport_q1[3])
+        pass
+
+    def efective_width(self):
+        f_headings = bool((self.flags & SheetState.HEADINGS).value)
+        return self._winfo_width + int(f_headings) * COL_CELLS_WIDTH
+
+    @property
+    def winfo_height(self):
+        return self._winfo_height
+    
+    @winfo_height.setter
+    def winfo_height(self, value):
+        self._winfo_height = value
+        ycell = self.tag_id(value, axis=1)
+        self.viewport_q1 = (*self.viewport_q1[:3], ycell)
+        pass
+
+    def efective_height(self):
+        f_headings = bool((self.flags & SheetState.HEADINGS).value)
+        return self._winfo_height + int(f_headings) * ROW_CELLS_HEIGHT
+    
+    def efective_area(self):
+        lt_corner_x = self.coords_vportq3[0] - COL_CELLS_WIDTH
+        lt_corner_y = self.coords_vportq3[1] - ROW_CELLS_HEIGHT
+        rb_corner_x = self.tag_coords(self.viewport_q1[2], axis=0)[1]
+        rb_corner_y = self.tag_coords(self.viewport_q1[3], axis=1)[1]
+        return (lt_corner_x, lt_corner_y, rb_corner_x, rb_corner_y)
 
     @contextmanager
     def pivot_point(self, isActiveCell=False, isUp=0):
@@ -111,6 +165,38 @@ class SheetLook:
             self.canvas.event_generate("<<SelectedCellsChanged>>")
         pass
 
+    def tag_coords(self, tag: int, viewport:tuple[int, ...]=None, coords_viewport: tuple[int, int]=None, axis: Literal[0, 1]=0) -> tuple[int, int]:
+        """Returns the heading (column/row) containing the given scoord screen coordinate."""
+        tag =  int(tag)
+        prefix = 'C' if axis == 0 else 'R'
+        cell_width = CELL_WIDTH if axis == 0 else CELL_HEIGHT
+        if viewport is None:
+            viewport = self.viewport_q1[:2]
+        if coords_viewport is None:
+            coords_viewport = self.coords_vportq1
+        hidden_width = [self.headings_dim[f"{prefix}{ikey}"] for ikey in range(min(viewport[axis], tag), max(viewport[axis], tag)) if f"{prefix}{ikey}" in self.headings_dim]
+        scr_x0 = coords_viewport[axis] + ((-1) ** int(tag < viewport[axis]))*((abs(tag - viewport[axis]) - len(hidden_width)) * cell_width + sum(hidden_width))
+        scr_x1 = scr_x0 + self.headings_dim.get(f"{prefix}{tag}", cell_width)
+        return scr_x0, scr_x1
+    
+    def tag_id(self, scoord:int, viewport:tuple[int, ...]=None, coords_viewport:tuple[int, int]=None, axis: Literal[0, 1]=0) -> tuple[int, int]:
+        """Returns the tag_id (int value for row/col) for "scoord" screen coords."""
+        if viewport is None:
+            viewport = self.viewport_q1
+        if coords_viewport is None:
+            coords_viewport = self.coords_vportq1
+        cell_width = CELL_WIDTH if axis == 0 else CELL_HEIGHT
+        xcell = viewport[axis]
+        while True:
+            ptx0, ptx1 = self.tag_coords(xcell, viewport, coords_viewport, axis=axis)
+            if ptx0 <= scoord < ptx1:
+                break
+            delta = max(abs(scoord - (ptx1 if scoord >= ptx1 else ptx0)) // cell_width, 1)
+            n = 1 if scoord >= ptx1 else -1
+            xcell = self.cell_inc(xcell, n * delta, axis=0)
+        return xcell
+
+
     def cell_coordinates(self, x: int, y:int, viewport:tuple[int, ...]=None, coords_viewport: tuple[int, int]=None) -> tuple[int, int, int, int]:
         """Calculates the coordinates of the cell based on the x and y position."""
         x, y =  map(int, (x, y))
@@ -118,11 +204,9 @@ class SheetLook:
             viewport = self.viewport_q1
         if coords_viewport is None:
             coords_viewport = self.coords_vportq1
-        col_width = [self.headings_dim[f"C{ikey}"] for ikey in range(min(viewport[0], x), max(viewport[0], x)) if f"C{ikey}" in self.headings_dim]
-        x0 = coords_viewport[0] + ((-1) ** int(x < viewport[0]))*((abs(x - viewport[0]) - len(col_width)) * CELL_WIDTH + sum(col_width))
-        row_height = [self.headings_dim[f"R{ikey}"] for ikey in range(min(viewport[1], y), max(viewport[1], y)) if f"R{ikey}" in self.headings_dim]
-        y0 = coords_viewport[1] + ((-1) ** int(y < viewport[1]))*((abs(y - viewport[1]) - len(row_height)) * CELL_HEIGHT + sum(row_height))
-        return (x0, y0, x0 + self.headings_dim.get(f"C{x}", CELL_WIDTH), y0 + self.headings_dim.get(f"R{y}", CELL_HEIGHT))
+        scr_x0, scr_x1 = self.tag_coords(x, viewport, coords_viewport, axis=0)
+        scr_y0, scr_y1 = self.tag_coords(y, viewport, coords_viewport, axis=1)
+        return scr_x0, scr_y0, scr_x1, scr_y1
     
     def area_coordinates(self, x0:int, y0:int, x1:int, y1:int) -> tuple[int, int, int, int]:
         nquadrant = self.cell_quadrant(x0, y0, isCoord=False)
@@ -143,45 +227,29 @@ class SheetLook:
         return (x0, y0, x1, y1)
     
     def cell_containing_coords(self, ptx:int, pty:int, viewport:tuple[int, ...]=None, coords_viewport:tuple[int, int]=None) -> tuple[int, int]:
-        """Returns the cell address containing the given x and y screen coordinates."""
+        """Returns the cell address containing the given ptx and pty screen coordinates."""
         if viewport is None:
             viewport = self.viewport_q1
         if coords_viewport is None:
             coords_viewport = self.coords_vportq1
-        xcell = viewport[0]
-        while True:
-            ptx0, ptx1 = self.cell_coordinates(xcell, 0, viewport, coords_viewport)[::2]
-            if ptx0 <= ptx < ptx1:
-                break
-            if ptx < ptx0:
-                delta = max((ptx0 - ptx) // CELL_WIDTH, 1)
-                while f"C{xcell - delta}" in self.headings_hided:
-                    delta += 1
-                xcell -= delta
-            elif ptx >= ptx1:
-                delta = max((ptx - ptx1) // CELL_WIDTH, 1)
-                while f"C{xcell + delta}" in self.headings_hided:
-                    delta += 1
-                xcell += delta
-
-        ycell = viewport[1]
-        while True:
-            pty0, pty1 = self.cell_coordinates(0, ycell, viewport, coords_viewport)[1::2]
-            if pty0 <= pty < pty1:
-                break
-            if pty < pty0:
-                delta = max((pty0 - pty) // CELL_HEIGHT, 1)
-                while f"R{ycell - delta}" in self.headings_hided:
-                    delta += 1
-                ycell -= delta
-            elif pty >= pty1:
-                delta = max((pty - pty1) // CELL_HEIGHT, 1)
-                while f"R{ycell + delta}" in self.headings_hided:
-                    delta += 1
-                ycell += delta
+        xcell = self.tag_id(ptx, viewport, coords_viewport, axis=0)
+        ycell = self.tag_id(pty, viewport, coords_viewport, axis=1)
+        
         xcell = max(1, min(MAX_COLS, int(xcell)))
         ycell = max(1, min(MAX_ROWS, int(ycell)))
         return (xcell, ycell)
+    
+    def cell_inc(self, xcell: int, delta: int, axis:Literal[0, 1]=0) -> int:
+        """Adds the given delta to the given cell coordinate."""
+        if delta != 0:
+            prefix = 'C' if axis == 0 else 'R'
+            n = delta // abs(delta)
+            fnc = lambda x: (xcell < int(x[1:]) <= xcell + delta) if n > 0 else (xcell > int(x[1:]) >= xcell + delta)
+            while delta:
+                d_hided = n * sum([1 for key in self.headings_hided if key[0] == prefix and fnc(key)])
+                xcell += delta
+                delta = d_hided
+        return xcell
     
     def cell_quadrant(self, x: int, y:int, isCoord: bool=True) -> int:
         """Returns the quadrant of the cell containing the given x and y screen coordinates."""
@@ -218,16 +286,14 @@ class SheetLook:
         else:
             pass
         viewport_x0, viewport_y0 = viewport
-        winfo_width, winfo_height = self.canvas.efective_width(), self.canvas.efective_height()
+        winfo_width, winfo_height = self.efective_width(), self.efective_height()
         x = max(1, min(MAX_COLS, x))
         y = max(1, min(MAX_ROWS, y))
         linf_x, linf_y = self.cell_coordinates(x, y, viewport, coords_viewport)[:2]
         deltax, deltay = linf_x - coords_viewport[0], linf_y - coords_viewport[1]
-        clinf_y = self.coords_vportq3[1] - ROW_CELLS_HEIGHT
-        clinf_x = self.coords_vportq3[0] - COL_CELLS_WIDTH
+        clinf_x, clinf_y, lsup_x, lsup_y = self.efective_area()
 
         ptx0 =  ptx1 = pty0 = pty1 = None
-        lsup_x, lsup_y = self.cell_coordinates(*self.viewport_q1[2:], viewport, coords_viewport)[2:]
         gx1, gy1 = map(int, self.canvas.coords("background")[2:])
 
         if deltax and ((deltax + winfo_width < coords_viewport[0]) or (deltax - winfo_width > winfo_width)):
@@ -404,12 +470,8 @@ class SheetLook:
 class SheetUI(tk.Canvas):
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
-        self.look = SheetLook(self, cell_content_gen)
-        #flags
+        self.look = SheetLook(self)
         self.f_drag = False  # Flag to indicate if a mouse drag is in progress
-        self.f_gridlines = True  # Flag to indicate if gridlines are visible
-        self.f_headings = True  # Flag to indicate if headings are visible
-        self.f_freeze = False  # Flag to indicate if freeze panes are visible
         self.error_report = ""
 
         self.bind("<Configure>", self.redraw_sheet)
@@ -440,14 +502,12 @@ class SheetUI(tk.Canvas):
         return super().__getattr__(attr)
     
     def reset_sheet(self):
-        self.look = SheetLook(self, cell_content_gen)
+        self.look = SheetLook(self)
         #flags
         self.f_drag = False  # Flag to indicate if a mouse drag is in progress
-        self.f_gridlines = True  # Flag to indicate if gridlines are visible
-        self.f_headings = True  # Flag to indicate if headings are visible
-        self.f_freeze = False  # Flag to indicate if freeze panes are visible
         self.delete("all")
-        self.redraw_sheet()
+        width, height = self.winfo_width(), self.winfo_height()
+        self.redraw_sheet(width=width, height=height)
 
     def move_viewport(self, x, y):
         # if self.look.move_viewport(x, y):
@@ -458,19 +518,18 @@ class SheetUI(tk.Canvas):
             self.setGUI()  # Redraw the sheet with the new viewport
             self.tag_raise("freeze_line")  # Move freeze_line above all tags
     
-    def efective_width(self):
-        return self.winfo_width() + int(self.f_headings) * COL_CELLS_WIDTH
-    
-    def efective_height(self):
-        return self.winfo_height() + int(self.f_headings) * ROW_CELLS_HEIGHT
+    def screen_cell_content(self, x0:int, y0:int, x1:int, y1:int) -> str:
+        """Returns the content of the screen area."""
+        items = self.find_enclosed(x0, y0, x1, y1)
+        if items:
+            return self.itemcget(items[0], "text")
+        return ""
 
     def draw_cell_content(self, box: tuple[int, int, int, int], cell_content:str, **kwargs):
         x0, y0, x1, y1 = box
-        items = [item for item in self.find_enclosed(x0, y0, x1, y1) if self.type(item) == "text"]
-        if items:
-            old_txt = self.itemcget(items[0], "text")
-            logging.debug(f"replacing {old_txt} with {cell_content}")
-            self.error_report += f" {old_txt}"
+        if old_text := self.screen_cell_content(x0, y0, x1, y1):
+            logging.debug(f"replacing {old_text} with {cell_content}")
+            self.error_report += f" {old_text}"
         tid = self.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=cell_content, anchor="center", **kwargs)
         tx0, tx1 = self.bbox(tid)[::2]
         if (tx1 - tx0) > (x1 - x0):
@@ -898,6 +957,9 @@ class SheetUI(tk.Canvas):
     def redraw_sheet(self, event=None, width=None, height=None):
         "Redraws the sheetui when the window is resized or needs updating."
 
+        self.look.winfo_width = event.width if event else width
+        self.look.winfo_height = event.height if event else height
+
         if self.find_withtag("background"):
             bg_coords = self.coords("background")
         else:
@@ -989,13 +1051,13 @@ class SheetUI(tk.Canvas):
             if isCtrlPressed:
                 dx = dx * ((pivot.x - 1) if dx < 0 else (MAX_COLS - pivot.x))
                 dy = dy * ((pivot.y - 1) if dy < 0 else (MAX_ROWS - pivot.y))
-            nquadrant = self.cell_quadrant(pivot.x, pivot.y, isCoord=False)
+            # nquadrant = self.cell_quadrant(pivot.x, pivot.y, isCoord=False)
             linf_x, linf_y = 1, 1
-            pivot.x = max(linf_x, min(MAX_COLS, pivot.x + dx))
-            pivot.y = max(linf_y, min(MAX_ROWS, pivot.y + dy))
+            pivot.x = max(linf_x, min(MAX_COLS, self.look.cell_inc(pivot.x, dx, axis=0)))
+            pivot.y = max(linf_y, min(MAX_ROWS, self.look.cell_inc(pivot.y, dy, axis=1)))
             xin, yin = pivot.x, pivot.y
         orig = self.quadrant_data(3)[0]
-        if not self.f_freeze:
+        if self.look.flags & SheetState.FREEZE is SheetState.NONE:
             if self.selected_cells[::2] == (1, MAX_COLS):
                xin, yin = self.viewport_q1[0], self.selected_cells[1::2][int(dy > 0)]
             elif self.selected_cells[1::2] == (1, MAX_ROWS):
@@ -1049,7 +1111,7 @@ class SheetUI(tk.Canvas):
 
     def toggle_headings(self):
         """Toggles the visibility of headings."""
-        if self.f_headings:
+        if self.look.flags & SheetState.HEADINGS:
             dx, dy = -COL_CELLS_WIDTH, -ROW_CELLS_HEIGHT
         else:
             dx, dy = COL_CELLS_WIDTH, ROW_CELLS_HEIGHT
@@ -1057,24 +1119,24 @@ class SheetUI(tk.Canvas):
         self.look.coords_vportq1 = (self.coords_vportq1[0] + dx, self.coords_vportq1[1] + dy)
         self.look.coords_vportq3 = linf_x, linf_y = (self.coords_vportq3[0] + dx, self.coords_vportq3[1] + dy)
         items = self.find_enclosed(-linf_x - 1, -linf_y - 1, lsup_x + 1, lsup_y + 1)
-        if self.f_freeze:
+        if self.look.flags & SheetState.FREEZE:
             items += self.find_withtag("freeze_line")
         for item in items:
             self.move(item, dx, dy)
-        self.f_headings = not self.f_headings
+        self.look.flags ^= SheetState.HEADINGS
 
     def toggle_gridlines(self):
         """Toggles the visibility of gridlines."""
-        if self.f_gridlines:
+        if self.look.flags & SheetState.GRIDLINES:
             [self.itemconfig(item, state="hidden") for item in self.find_withtag("vgrid_lines")]
             [self.itemconfig(item, state="hidden") for item in self.find_withtag("hgrid_lines")]
         else:
             [self.itemconfig(item, state="normal") for item in self.find_withtag("vgrid_lines")]
             [self.itemconfig(item, state="normal") for item in self.find_withtag("hgrid_lines")]
-        self.f_gridlines = not self.f_gridlines
+        self.look.flags ^= SheetState.GRIDLINES
     
     def toggle_freeze_panes(self, *args):
-        if not self.f_freeze:
+        if self.look.flags & SheetState.FREEZE is SheetState.NONE:
             x0, y0, x1, y1 = self.viewport_q3
             coord_acx, coord_acy = self.cell_coordinates(*self.active_cell)[:2]
             if self.active_cell[0] != self.viewport_q1[0]:
@@ -1096,7 +1158,7 @@ class SheetUI(tk.Canvas):
             self.look.viewport_q3 = 1, 1, 1, 1
             items = self.find_withtag("freeze_line")
             self.delete(*items)
-        self.f_freeze = not self.f_freeze
+        self.look.flags ^= SheetState.FREEZE
 
     def on_key_press(self, event):
         """Sets the active cell based on the arrow key pressed."""
@@ -1330,7 +1392,7 @@ class SheetUI(tk.Canvas):
             if direction == 'units':
                 delta = int(args[1])
                 viewport_y0 = self.viewport_q1[1]
-                viewport_y0 += delta
+                viewport_y0 = self.look.cell_inc(viewport_y0, delta, axis=1)
                 self.yview_moveto(viewport_y0)
             elif direction == 'pages':
                 delta = int(args[1])
@@ -1389,7 +1451,7 @@ class SheetUI(tk.Canvas):
             if direction == 'units':
                 delta = int(args[1])
                 viewport_x0 = self.viewport_q1[0]
-                viewport_x0 += delta
+                viewport_x0 = self.look.cell_inc(viewport_x0, delta, axis=0)
                 self.xview_moveto(viewport_x0)
             elif direction == 'pages':
                 delta = int(args[1])
@@ -1432,7 +1494,8 @@ class SheetViewer(tk.Tk):
     def __init__(self):
         super().__init__()
         self.f_rec = False
-        self.action_stack = []
+        self.action_stack = collections.deque()
+        self.action_map = {'self': self, 'logging': logging}
         self.fnc_to_test = [
             "choose an action", 
             "delete_rows", "insert_rows", "set_rows_height", 
@@ -1451,10 +1514,9 @@ class SheetViewer(tk.Tk):
 
     def event_monitor(self, event):
         wdg = event.widget
-        wname = f"{wdg.winfo_parent()}.{wdg.winfo_name()}"
+        # wname = f"{wdg.winfo_parent()}.{wdg.winfo_name()}"
+        wname = wdg.winfo_name()
         sevent = str(event)
-        logging.debug(f"****** Event: {sevent} *****")
-        tk.Event
         # Action string
         sevent = sevent.strip('<>').replace(' event ', ' ')
         eseq, *kwargs = sevent.split()
@@ -1490,9 +1552,13 @@ class SheetViewer(tk.Tk):
             if 'send_event' in kwargs:
                 kwargs['sendevent'] = kwargs.pop('send_event')
                 
+            kwargs.pop('char', None)
+            
             kwargs = ', '.join(f'{k}={v}' for k, v in kwargs.items())
-            saction = f"self.nametowidget('{wname}').event_generate('<{eseq}>', {kwargs})"
-        logging.debug(f"****** Action: {saction} *****")
+            # saction = f"self.nametowidget('{wname}').event_generate('<{eseq}>', {kwargs})"
+            saction = f"{wname}.event_generate('<{eseq}>', {kwargs})"
+        if not len(self.action_stack):
+            self.action_stack.append('<start/>')
         self.action_stack.append(saction)
         # Get widget wit the name 'txt'
         wdg = self.nametowidget('.errorfrm.txt')
@@ -1537,9 +1603,9 @@ class SheetViewer(tk.Tk):
         chkbtn.pack(side="left")
         # txt = ttk.Label(frame, name="txt", width=60, text='.....')
         # txt.pack(side="left")
-        btn = ttk.Button(frame, text="run", command=lambda: self.action_cmds('step'))
+        btn = ttk.Button(frame, text="step", command=lambda: self.action_cmds('step'))
         btn.pack(side="left")
-        btn = ttk.Button(frame, text="all", command=lambda: self.action_cmds('run'))
+        btn = ttk.Button(frame, text="run", command=lambda: self.action_cmds('run'))
         btn.pack(side="left")
         btn = ttk.Button(frame, text="Reset", command=lambda: self.action_cmds('reset'))
         btn.pack(side="left")
@@ -1548,10 +1614,13 @@ class SheetViewer(tk.Tk):
         btn.pack(side="right")
         btn = ttk.Button(frame, text="load", command=lambda: self.action_cmds('load'))
         btn.pack(side="right")
+        btn = ttk.Button(frame, text="test", command=lambda: self.action_cmds('test'))
+        btn.pack(side="right")
+
 
         frame = ttk.Frame(self, name='errorfrm')
         frame.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 4))
-        lbl = ttk.Label(frame, text="Last action:")
+        lbl = ttk.Label(frame, text="Next action:")
         lbl.pack(side="left")
         self.errorReport = ttk.Label(frame, name="txt", text="....", background="grey", font=("Arial", 10), foreground="white", anchor="w")
         self.errorReport.pack(side="left", expand=tk.YES, fill=tk.X)
@@ -1609,6 +1678,7 @@ class SheetViewer(tk.Tk):
                 parent=self,
                 title="Open",
                 defaultextension=".txt",
+                initialfile="current_bug.txt",
                 filetypes=[("Macro Files", "*.txt"), ("All Files", "*.*")],
                 initialdir=os.path.join(idir, "macros"),
             )
@@ -1617,8 +1687,8 @@ class SheetViewer(tk.Tk):
                 logging.debug(f"Loading from:{fname}")
                 with open(fname, "r") as f:
                     content = f.readlines()
-                self.action_stack = content
-                self.nametowidget('.errorfrm.txt')['text'] = content[-1]
+                self.action_stack = collections.deque(content)
+                self.nametowidget('.errorfrm.txt')['text'] = content[0].strip()
         elif cmd == 'rec':
             wdg = self.nametowidget('.actionfrm.rec')
             self.f_rec = not self.f_rec
@@ -1636,19 +1706,57 @@ class SheetViewer(tk.Tk):
                     self.sheetui.bind(bind, bnd_cb)
                 wdg['text'] = "Rec"
             pass
-
         elif cmd == 'run':
-            for action in self.action_stack[:-1]:
-                logging.debug(f"Executing action: {action}")
-                exec(action)
+            if (action := self.action_stack[0].strip()) == '<start/>':
+                self.action_stack.append(self.action_stack.popleft())
+            while (action := self.action_stack[0].strip()) != '<start/>':
+                self.action_cmds('step')
+            self.action_map = {'self': self, 'logging': logging}
         elif cmd == 'step':
-            exec(self.action_stack[-1])
+            if (action := self.action_stack[0]).strip() == '<start/>':
+                self.action_map = {'self': self, 'logging': logging}
+                self.action_stack.append(self.action_stack.popleft())
+            while True:
+                action = self.action_stack[0]
+                self.action_stack.append(self.action_stack.popleft())
+                action = action.rstrip()
+                # Comments skipped (allowed as a complete line).
+                if action and action[0] != '#':
+                    break
+            if action == '<test>':
+                test = ''
+                while True:
+                    self.action_stack.append(self.action_stack.popleft())
+                    if (action := self.action_stack[0].rstrip()) == '</test>':
+                        action = '# ' + action
+                        self.action_stack.append(self.action_stack.popleft())
+                        break
+                    test += "\n" + action
+                action = test
+            logging.debug(f"Executing action: {action}")
+            # exec(action, self.action_map)
+            self.front_end.exec_code(action, toArchive=True)
+            self.nametowidget('.errorfrm.txt')['text'] = self.action_stack[0].strip()
         elif cmd == 'reset':
             # Put the canvas in a clean slate
-            self.action_stack = []
+            # self.action_stack = []
             self.nametowidget('.errorfrm.txt')['text'] = "...."
             self.sheetui.reset_sheet()
-
+        elif cmd == 'test':
+            self.state("normal")
+            self.geometry("600x400+78+78")
+            class MyApp(tk.Toplevel):
+                def destroy(totlevel):
+                    print('destroy')
+                    super().destroy()
+            top_child = MyApp(self, name='console')
+            top_child.geometry("600x400+680+78")
+            self.action_map = {'self': self, 'logging': logging, 'sheetui': self.sheetui}
+            self.front_end = fend = Frontend(top_child, context=self.action_map)
+            fend.pack(side="top", fill="both", expand=True)
+            top_child.mainloop()
+            print(top_child.winfo_children())
+            
     def on_combobox_change(self, event):
             fname = self.cbox.get()
             fnc = getattr(self.sheetui, fname)
@@ -1683,14 +1791,5 @@ def main():
     root = SheetViewer()
     root.mainloop()
 
-def look():
-    look = SheetLook(None, None)
-    for x in range(1, 10):
-        x0, x1 = look.cell_coordinates(x, 1)[::2]
-        xmed = (x0 + x1) // 2
-        col, row = look.cell_containing_coords(xmed, 30)
-        print(f'{x=}, ({x0=}, {x1=}), width={x1-x0}, {col=}')
-
 if __name__ == "__main__":
     main()
-    # look()

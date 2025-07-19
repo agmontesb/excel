@@ -1,0 +1,52 @@
+<start/>
+sheetui = self.nametowidget('.!frame2.sheetui') 
+
+# Active Cell movement
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Right', keycode=39, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Down', keycode=40, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Down', keycode=40, x=17, y=-44, sendevent=True)
+
+# Active Cell Selection.
+sheetui.event_generate('<KeyPress>', state=0x00001|0x40000, keysym='Down', keycode=40, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001|0x40000, keysym='Down', keycode=40, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001|0x40000, keysym='Down', keycode=40, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001|0x40000, keysym='Right', keycode=39, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001|0x40000, keysym='Right', keycode=39, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001|0x40000, keysym='Right', keycode=39, x=17, y=-44, sendevent=True)
+<test>
+self.logging.debug("Cell Selection Test")
+try:
+    assert sheetui.active_cell == (4, 4), f"Fail active cell test: {sheetui.active_cell} != {(4, 4)}"
+except AssertionError as e:
+    logging.debug(str(e))  
+</test>
+
+# Selection and Return KeyPress
+sheetui.event_generate('<KeyPress>', keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Return', keycode=13, x=17, y=-44, sendevent=True)
+
+# Selection and Tab KeyPress.
+sheetui.event_generate('<KeyPress>', keysym='Tab', keycode=9, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Tab', keycode=9, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Tab', keycode=9, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Tab', keycode=9, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Tab', keycode=9, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Tab', keycode=9, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Tab', keycode=9, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Tab', keycode=9, x=17, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Tab', keycode=9, x=17, y=-44, sendevent=True)
+
+# 
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Right', keycode=39, x=17, y=-44, sendevent=True)
