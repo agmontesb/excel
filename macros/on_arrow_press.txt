@@ -1,5 +1,4 @@
 <start/>
-sheetui = self.nametowidget('.!frame2.sheetui') 
 
 # Active Cell movement
 sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Right', keycode=39, x=17, y=-44, sendevent=True)

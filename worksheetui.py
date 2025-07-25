@@ -296,7 +296,7 @@ class SheetLook:
         ptx0 =  ptx1 = pty0 = pty1 = None
         gx1, gy1 = map(int, self.canvas.coords("background")[2:])
 
-        if deltax and ((deltax + winfo_width < coords_viewport[0]) or (deltax - winfo_width > winfo_width)):
+        if deltax and abs(deltax) >= winfo_width:
             # All the cell information and column headings need to be updated
             items = self.canvas.find_enclosed(coords_viewport[0] - 1, clinf_y - 1, gx1 + 1, gy1 + 1)
             self.canvas.delete(*items)
@@ -329,6 +329,7 @@ class SheetLook:
         elif deltax > 0:
             # Rigth displacement
             dx = deltax
+            
             items = self.canvas.find_enclosed(coords_viewport[0] - 1, clinf_y - 1, linf_x + 1, gy1 + 1)
             self.canvas.delete(*items)
             # Move the viewport dx pixel to the left
@@ -351,7 +352,7 @@ class SheetLook:
             self.viewport_q1 = (viewport_x0, self.viewport_q1[1],viewport_x1, self.viewport_q1[3])
             pass
 
-        if deltay and ((deltay + winfo_height < coords_viewport[1]) or (deltay - winfo_height > winfo_height)):
+        if deltay and abs(deltay) >= winfo_height:
             # All the cell information and row headings need to be updated
             items = self.canvas.find_enclosed(clinf_x - 1, coords_viewport[1] - 1, gx1 + 1, gy1 + 1)
             self.canvas.delete(*items)
@@ -632,7 +633,7 @@ class SheetUI(tk.Canvas):
                 y0, y1 = self.cell_coordinates(0, ycell, orig, coords_orig)[1::2]
                 self.create_rectangle(x0, y0, x1, y1, fill="green", outline="black", tags="row")
                 # Draw cell headings
-                self.draw_cell_content((x0, y0, x1, y1), f"C{ycell}", fill="white", tags="rows_tag")
+                self.draw_cell_content((x0, y0, x1, y1), f"R{ycell}", fill="white", tags="rows_tag")
                 # Draw horizontal lines
                 self.create_line(x0, y1, winfo_width, y1, fill=GRID_COLOR, tags="hgrid_lines")
                 cy0 = y1
@@ -670,7 +671,9 @@ class SheetUI(tk.Canvas):
             logging.debug(sorted(Counter([self.itemcget(item, 'tags') for item in self.find_all()]).items()))
         pass
     
-    def set_active_cell(self):
+    def show_ws_elements(self):
+        """Shows the elements as active cell, selected cells, freeze lines, rows/cols selected in the worksheet."""
+
         # Set the tag "selected" for the region in coords (40, CELL_HEIGHT, 40 + 5*CELL_WIDTH, CELL_HEIGHT + 5*CELL_HEIGHT) rectangle
         def clip_rectangle(x0, y0, x1, y1, clipping_rgn=None):
             if clipping_rgn:
@@ -679,9 +682,9 @@ class SheetUI(tk.Canvas):
                 y0, y1 = min(lsup_y, max(linf_y, y0)), max(linf_y, min(y1, lsup_y))
             return x0, y0, x1, y1
         self.delete("selected_cells")
-        clipping_rect = self.look.area_coordinates(*self.viewport_q3[:2], *self.viewport_q1[2:])
-        # winfo_width, winfo_height = self.efective_width(), self.efective_height()
-        # clipping_rect = (self.coords_vportq3[0], self.coords_vportq3[1], winfo_width, winfo_height)
+        tl_corner = self.coords_vportq3
+        br_corner = self.look.cell_coordinates(*self.viewport_q1[2:])[2:]
+        clipping_rect = *tl_corner, *br_corner
 
         x0, y0, x1, y1 = self.area_coordinates(*self.selected_cells)
         sel_x0, sel_y0, sel_x1, sel_y1 = clip_rectangle(x0, y0, x1, y1, clipping_rect)
@@ -775,7 +778,7 @@ class SheetUI(tk.Canvas):
             self.tag_area(*area, tag="invalid_area")
             logging.debug(f"Invalidated area: {self.area_cells(*area)}")
         self.setGUI()
-        self.set_active_cell()
+        self.show_ws_elements()
 
     def insert_rows(self):
         """Inserts (y1 - y0) headings with default dimension before heading y0."""
@@ -810,7 +813,7 @@ class SheetUI(tk.Canvas):
         self.tag_area(*area, tag="invalid_area")
 
         self.setGUI()
-        self.set_active_cell()
+        self.show_ws_elements()
 
     def delete_rows(self):
         """Deletes the rows in the range y0:y1 and returns the change in height."""
@@ -848,7 +851,7 @@ class SheetUI(tk.Canvas):
         logging.debug(f"Invalidated area: {self.area_cells(*area)}")
 
         self.setGUI()
-        self.set_active_cell()
+        self.show_ws_elements()
 
     def set_cols_width(self, width):
         """Sets the width of the columns in the range x0:x1 and returns the change in width."""
@@ -882,7 +885,7 @@ class SheetUI(tk.Canvas):
             self.tag_area(*area, tag="invalid_area")
             logging.debug(f"Invalidated area: {self.area_cells(*area)}")
         self.setGUI()
-        self.set_active_cell()
+        self.show_ws_elements()
 
     def insert_columns(self):
         """Inserts (x1 - x0) headings with default dimension before heading x0."""
@@ -914,7 +917,7 @@ class SheetUI(tk.Canvas):
         self.tag_area(*area, tag="invalid_area")
 
         self.setGUI()
-        self.set_active_cell()
+        self.show_ws_elements()
 
     def delete_columns(self):
         """Deletes the columns in the range x0:x1 and returns the change in width."""
@@ -952,7 +955,7 @@ class SheetUI(tk.Canvas):
         logging.debug(f"Invalidated area: {self.area_cells(*area)}")
 
         self.setGUI()
-        self.set_active_cell()
+        self.show_ws_elements()
 
     def redraw_sheet(self, event=None, width=None, height=None):
         "Redraws the sheetui when the window is resized or needs updating."
@@ -1041,7 +1044,19 @@ class SheetUI(tk.Canvas):
 
             self.xview('scroll', '-1', 'units')
             self.yview('scroll', '-1', 'units')
-            self.set_active_cell()
+            self.show_ws_elements()
+
+    def set_selected_cells(self, x0:int, y0:int, *br_corner:tuple[int,int]):
+        """Sets the selected cells."""
+        tl_corner = x0, y0
+        with self.pivot_point(isActiveCell=True) as pivot:
+            pivot.x, pivot.y = tl_corner
+        if br_corner:
+            with self.pivot_point(isActiveCell=False) as pivot:
+                pivot.x, pivot.y = br_corner
+            self.show_cell(*br_corner)
+        self.show_cell(*tl_corner)
+        self.show_ws_elements()
 
     def offset_acell(self, dx, dy, state):
         isShiftPressed = state & SHIFT_PRESSED
@@ -1069,7 +1084,7 @@ class SheetUI(tk.Canvas):
             elif nquadrant == 4:
                 xin = self.viewport_q1[0]
             self.show_cell(xin, yin)
-        self.set_active_cell()
+        self.show_ws_elements()
 
     def show_cell(self, xin, yin):
         winfo_width, winfo_height = map(int, (self.winfo_width(), self.winfo_height()))
@@ -1176,7 +1191,7 @@ class SheetUI(tk.Canvas):
             self.move_viewport(viewport_x0, viewport_y0)
             self.xview_moveto(viewport_x0)
             self.yview_moveto(viewport_y0)
-            self.set_active_cell()
+            self.show_ws_elements()
             return "break"
         elif event.keysym in ("Next", "Prior"):
             viewport_x0, viewport_y0 = self.viewport_q1[:2]
@@ -1194,7 +1209,7 @@ class SheetUI(tk.Canvas):
                     self.yview('scroll', -1 if event.keysym == 'Prior' else 1, 'pages')
                 pivot.x = self.cell_containing_coords(coord_pivot_x, 0)[0]
                 pivot.y = self.cell_containing_coords(0, coord_pivot_y)[1]
-            self.set_active_cell()
+            self.show_ws_elements()
             return "break"
         elif event.keysym == "Return":
             if self.selected_cells[:2] != self.selected_cells[2:]:
@@ -1208,7 +1223,7 @@ class SheetUI(tk.Canvas):
                     acell_y0 = (acell_y0 + 1) if acell_y0 < sel_y1 else sel_y0
                 self.look.active_cell = (acell_x0, acell_y0)
                 self.show_cell(acell_x0, acell_y0)
-                self.set_active_cell()
+                self.show_ws_elements()
                 return "break"
             else:
                 event.keysym = "Up" if event.state & SHIFT_PRESSED else "Down"  # Treat Return as Down for consistency
@@ -1224,7 +1239,7 @@ class SheetUI(tk.Canvas):
                     acell_y0 = acell_y0 if acell_x0 < sel_x1 else ((acell_y0 + 1) if acell_y0 < sel_y1 else sel_y0)
                     acell_x0 = (acell_x0 + 1) if acell_x0 < sel_x1 else sel_x0
                 self.look.active_cell = (acell_x0, acell_y0)
-                self.set_active_cell()
+                self.show_ws_elements()
                 return "break"
             else:
                 event.keysym = "Left" if event.state & SHIFT_PRESSED else "Right"  # Treat Return as Down for consistency
@@ -1246,7 +1261,7 @@ class SheetUI(tk.Canvas):
         if event.x < COL_CELLS_WIDTH and event.y < ROW_CELLS_HEIGHT:
             self.selected_cells = (1, 1, MAX_COLS, MAX_ROWS)
             self.look.active_cell = self.viewport_q1[:2]
-            self.set_active_cell()
+            self.show_ws_elements()
             return "break"
         event_x, event_y = max(event.x, COL_CELLS_WIDTH), max(event.y, ROW_CELLS_HEIGHT)
         nquadrant = self.cell_quadrant(event_x, event_y)
@@ -1267,7 +1282,7 @@ class SheetUI(tk.Canvas):
                 self.look.active_cell = (clk_x, self.viewport_q1[1])
         # if (row_clk or col_clk) and not event.state & SHIFT_PRESSED:
         #     self.active_cell = (clk_x, self.viewport_q1[1])
-        self.set_active_cell()
+        self.show_ws_elements()
         self.focus_set()  # Set focus to the canvas
 
     def on_mouse_drag(self, event):
@@ -1286,7 +1301,7 @@ class SheetUI(tk.Canvas):
                     clk_x, clk_y = self.cell_containing_coords(event_x, ROW_CELLS_HEIGHT + 1)
                     with self.pivot_point(isActiveCell=False) as pivot:
                         pivot.y = clk_y
-                    self.set_active_cell()
+                    self.show_ws_elements()
                     self.after(1000, self.on_mouse_drag, event)  # Repeat the drag event after a delay
                 else:
                     # Column selection
@@ -1310,7 +1325,7 @@ class SheetUI(tk.Canvas):
                     pivot.x = clk_x
                     pivot.y = clk_y
                 self.show_cell(clk_x, clk_y)
-                self.set_active_cell()
+                self.show_ws_elements()
             elif event_x < COL_CELLS_WIDTH and event_y >= ROW_CELLS_HEIGHT:
                 # mouse over row headings
                 if self.selected_cells[::2] != (1, MAX_COLS):
@@ -1319,7 +1334,7 @@ class SheetUI(tk.Canvas):
                     clk_x, clk_y = self.cell_containing_coords(COL_CELLS_WIDTH + 1, event_y)
                     with self.pivot_point(isActiveCell=False) as pivot:
                         pivot.x = clk_x
-                    self.set_active_cell()
+                    self.show_ws_elements()
                     self.after(1000, self.on_mouse_drag, event)
                 else:
                     # Row selection
@@ -1356,7 +1371,7 @@ class SheetUI(tk.Canvas):
                         clk_x, clk_y = self.cell_containing_coords(COL_CELLS_WIDTH + 1,ROW_CELLS_HEIGHT + 1)
                         pivot.x = clk_x
                         pivot.y = clk_y
-                self.set_active_cell()
+                self.show_ws_elements()
             return "break"  # Prevent default behavior of mouse drag
         else:
             logging.debug("Mouse drag event ignored, not in drag mode.")
@@ -1407,7 +1422,7 @@ class SheetUI(tk.Canvas):
                     viewport_y0 = min(MAX_ROWS, max(1, viewport_y0))
                 fraction = (viewport_y0 - self.viewport_q3[3]) / (MAX_ROWS - self.viewport_q3[3])
                 self.yview_moveto(fraction)
-            self.set_active_cell()
+            self.show_ws_elements()
         elif args[0] == 'moveto':
             self.yview_moveto(args[1])
         else:
@@ -1466,7 +1481,7 @@ class SheetUI(tk.Canvas):
                     viewport_x0 = min(MAX_COLS, max(1, viewport_x0))
                 fraction = (viewport_x0 - self.viewport_q3[2]) / (MAX_COLS - self.viewport_q3[2])
                 self.xview_moveto(fraction)
-            self.set_active_cell()
+            self.show_ws_elements()
         elif args[0] == 'moveto':
             self.xview_moveto(args[1])
         else:
@@ -1493,9 +1508,9 @@ class SheetUI(tk.Canvas):
 class SheetViewer(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.f_rec = False
-        self.action_stack = collections.deque()
-        self.action_map = {'self': self, 'logging': logging}
+        self.front_end = None
+        self.top_child = None
+        self.named_range = {}
         self.fnc_to_test = [
             "choose an action", 
             "delete_rows", "insert_rows", "set_rows_height", 
@@ -1508,10 +1523,204 @@ class SheetViewer(tk.Tk):
         self.bind("<<ActiveCellChanged>>", self.on_active_cell_changed)
         self.bind("<<SelectedCellsChanged>>", self.on_selected_cells_changed)
         self.bind("<<errorReport>>", self.on_error_report)
-        self.bind("<<EventMonitor>>", self.event_monitor)
         self.geometry("600x400")
-        self.monitor = self.bind("<<EventMonitor>>")
 
+    def on_active_cell_changed(self, event):
+        active_cell = event.widget.active_cell
+        self.activeCell.set(f"Active Cell: {active_cell}")
+
+    def on_selected_cells_changed(self, event):
+        selected_cells = event.widget.selected_cells
+        sel_x0, sel_y0, sel_x1, sel_y1 = selected_cells
+        nrows = sel_y1 - sel_y0 + 1
+        ncols = sel_x1 - sel_x0 + 1
+        self.activeCell.set(f"Selected Cells: {nrows}R x {ncols}C ({sel_x0}, {sel_y0}) to ({sel_x1}, {sel_y1})")
+
+    def on_error_report(self, event):
+        widget: SheetUI = event.widget
+        error_message = widget.error_report
+        self.errorReport.config(text=error_message)
+        event.widget.errorReport = ""  # Clear the error message after displaying it
+
+    def on_activecell_return(self, event):
+        """Adds the typed text to the combobox values when Return is pressed."""
+        widget = event.widget
+        new_value = widget.get()
+
+        # Get the current list of values from the combobox
+        current_values = list(widget["values"])
+
+        # Add the new value if it's not empty and not already in the list
+        new_value = new_value.strip()
+        try:
+            new_value = list(map(int, new_value.split(",")))
+        except ValueError:
+            if new_value and new_value not in current_values:
+                current_values.append(new_value)
+                widget.config(values=sorted(current_values))
+                # The new value is already displayed as it was typed by the user.
+                widget.set(new_value)
+                self.named_range[new_value] = self.sheetui.selected_cells
+        else:
+            self.sheetui.set_selected_cells(*new_value)
+        self.sheetui.focus_set()
+
+
+    def on_activecell_click(self, event):
+        wdg: ttk.Combobox = event.widget
+        """Selects all text in the combobox when clicked or focused."""
+        self.after(10, lambda: wdg.selection_range(0, 'end'))
+
+    def setGui(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)  # Change to row 2 for the main frame
+
+        # --- Add labels at the top ---
+
+        frame = ttk.Frame(self)
+        frame.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 4))
+        vals = self.fnc_to_test
+        self.cbox = cbox = ttk.Combobox(frame, name="cbox", values=vals, state="readonly")
+        cbox.set(vals[0])  # Set default value
+        cbox.pack(side="left")
+        cbox.bind("<<ComboboxSelected>>", self.on_combobox_change)  # <-- Bind the event here
+        btn = ttk.Button(frame, text="Macros", command=self.show_macrosui)
+        btn.pack(side="right")
+
+        # self.activeCell = ttk.Label(frame, text="Active Cell: ", background="magenta", font=("Arial", 10))
+        # self.activeCell.pack(side="left",expand=True, fill="x", padx=4)
+        self.activeCell = cbox = ttk.Combobox(frame, name='activecell', background='magenta', font=("Arial", 10))
+        cbox.pack(side="left",expand=True, fill="x", padx=4)
+        cbox.bind("<Return>", self.on_activecell_return)
+        cbox.bind("<FocusIn>", self.on_activecell_click)
+        cbox.bind("<Button-1>", self.on_activecell_click)
+        cbox.bind("<<ComboboxSelected>>", self.on_combobox_change)
+
+        # Create a frame to hold the canvas and scrollbars
+        frame = ttk.Frame(self, name='testfrm')
+        frame.grid(row=1, column=0, sticky=(tk.N, tk.W, tk.E, tk.S))
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+
+        # Create vertical and horizontal scrollbars
+        v_scroll = ttk.Scrollbar(frame, name='vscroll', orient="vertical")
+        h_scroll = ttk.Scrollbar(frame, name='hscroll', orient="horizontal")
+
+        # Create the SheetUI canvas
+        self.sheetui = sheetui = SheetUI(frame, name='sheetui', bg=GRID_COLOR, 
+                                yscrollcommand=v_scroll.set, 
+                                xscrollcommand=h_scroll.set,
+                                scrollregion=(1, 1, MAX_COLS, MAX_ROWS)
+        )  # Adjust scrollregion as needed
+
+            # Configure scrollbars to control the canvas
+        v_scroll.config(command=sheetui.yview)
+        h_scroll.config(command=sheetui.xview)
+
+        # Layout
+        sheetui.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        h_scroll.grid(row=1, column=0, sticky="ew")
+
+    def show_macrosui(self):
+        self.state("normal")
+        self.geometry("600x400+78+78")
+        self.action_map = {'self': self, 'logging': logging, 'sheetui': self.sheetui}
+        self.top_child = top_child = MacrosUI(self, name='console', geometry="600x400+680+78", context=self.action_map)
+        top_child.mainloop()
+            
+    def on_combobox_change(self, event):
+        wdg: ttk.Combobox = event.widget
+        wdg_name = wdg.winfo_name()
+        if wdg_name == 'activecell':
+            fname = wdg.get()
+            self.sheetui.set_selected_cells(*self.named_range[fname])
+        else:
+            fname = self.cbox.get()
+            fnc = getattr(self.sheetui, fname)
+            args = []
+            if (sig:=inspect.signature(fnc)).parameters:
+                # display a message box to get  the pivot cell coordinates
+                msg1 = f"{fname} requires parameters.\n {fname}({', '.join(p.name for p in sig.parameters.values())}) \nPlease enter parameters as integers separated with commas in the format 'x, y'."
+                answ = simpledialog.askstring(fname, msg1, parent=self)
+                if answ:
+                    try:
+                        args = list(map(lambda w: int(w), answ.split(",")))
+                    except ValueError:  
+                        fnc = lambda *args: 1
+                        print("Invalid input. Please enter parameters as integers separated with commas in the format 'x, y'.")
+                else:
+                    fnc = lambda *args: 2
+                    print("No input provided.")
+            sargs = ", ".join(map(str, args))
+            logging.debug(f"self.sheetui.{fname}({sargs})")
+            top_child = self.top_child
+            if top_child and top_child.f_rec == True:
+                saction = f"sheetui.{fname}({sargs})"
+                top_child.action_stack.append(saction)
+                # Get widget wit the name 'txt'
+                wdg = top_child.nametowidget('errorfrm.txt')
+                wdg['text'] = f"{fname}({sargs})"
+            fnc(*args)
+            self.cbox.set("choose an action")
+        self.sheetui.focus_set()
+
+
+class MacrosUI(tk.Toplevel):
+
+    def __init__(self, parent, geometry="600x400+78+78", context=None, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+        self.geometry(geometry)
+        self.context = context
+        self.f_rec = False
+        self.action_stack = collections.deque()
+        self.action_map = {'self': self, 'logging': logging}
+
+        self.setGUI()
+
+        self.bind("<<EventMonitor>>", self.event_monitor)
+        self.monitor = self.bind("<<EventMonitor>>")
+        pass
+
+    @property
+    def front_end(self):
+        return self.nametowidget('.console.front_end')
+
+    def setGUI(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)  # Change to row 2 for the main frame
+
+        frame = ttk.Frame(self, name='actionfrm')
+        frame.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 4))
+        chkbtn = ttk.Checkbutton(frame, name="rec", text="Rec", command=lambda: self.action_cmds('rec'))
+        chkbtn.pack(side="left")
+        btn = ttk.Button(frame, text="step", command=lambda: self.action_cmds('step'))
+        btn.pack(side="left")
+        btn = ttk.Button(frame, text="run", command=lambda: self.action_cmds('run'))
+        btn.pack(side="left")
+        btn = ttk.Button(frame, text="Reset", command=lambda: self.action_cmds('reset'))
+        btn.pack(side="left")
+        
+        btn = ttk.Button(frame, text="save", command=lambda: self.action_cmds('save'))
+        btn.pack(side="right")
+        btn = ttk.Button(frame, text="load", command=lambda: self.action_cmds('load'))
+        btn.pack(side="right")
+        btn = ttk.Button(frame, text="test", command=lambda: self.action_cmds('test'))
+        btn.pack(side="right")
+
+        frame = ttk.Frame(self, name='errorfrm')
+        frame.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 4))
+        lbl = ttk.Label(frame, text="Next action:")
+        lbl.pack(side="left")
+        self.errorReport = ttk.Label(frame, name="txt", text="....", background="grey", font=("Arial", 10), foreground="white", anchor="w")
+        self.errorReport.pack(side="left", expand=tk.YES, fill=tk.X)
+
+        fend = Frontend(self, name='front_end', context=self.context)
+        fend.grid(row=2, column=0, sticky=(tk.N, tk.W, tk.E, tk.S))
+        # fend.columnconfigure(0, weight=1)
+        # fend.rowconfigure(2, weight=1)
+        pass
+    
     def event_monitor(self, event):
         wdg = event.widget
         # wname = f"{wdg.winfo_parent()}.{wdg.winfo_name()}"
@@ -1561,98 +1770,14 @@ class SheetViewer(tk.Tk):
             self.action_stack.append('<start/>')
         self.action_stack.append(saction)
         # Get widget wit the name 'txt'
-        wdg = self.nametowidget('.errorfrm.txt')
+        wdg = self.nametowidget('errorfrm.txt')
         wdg['text'] = saction.rsplit('.', 1)[-1]
 
-    def on_active_cell_changed(self, event):
-        active_cell = event.widget.active_cell
-        self.activeCell.config(text=f"Active Cell: {active_cell}")
-
-    def on_selected_cells_changed(self, event):
-        selected_cells = event.widget.selected_cells
-        sel_x0, sel_y0, sel_x1, sel_y1 = selected_cells
-        nrows = sel_y1 - sel_y0 + 1
-        ncols = sel_x1 - sel_x0 + 1
-        self.activeCell.config(text=f"Selected Cells: {nrows}R x {ncols}C ({sel_x0}, {sel_y0}) to ({sel_x1}, {sel_y1})")
-
-    def on_error_report(self, event):
-        widget: SheetUI = event.widget
-        error_message = widget.error_report
-        self.errorReport.config(text=error_message)
-        event.widget.errorReport = ""  # Clear the error message after displaying it
-
-    def setGui(self):
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(3, weight=1)  # Change to row 2 for the main frame
-
-        # --- Add labels at the top ---
-
-        frame = ttk.Frame(self)
-        frame.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 4))
-        vals = self.fnc_to_test
-        self.cbox = cbox = ttk.Combobox(frame, name="cbox", values=vals, state="readonly")
-        cbox.set(vals[0])  # Set default value
-        cbox.pack(side="left")
-        cbox.bind("<<ComboboxSelected>>", self.on_combobox_change)  # <-- Bind the event here
-        self.activeCell = ttk.Label(frame, text="Active Cell: ", background="magenta", font=("Arial", 10))
-        self.activeCell.pack(side="left",expand=True, fill="x", padx=4)
-        
-        frame = ttk.Frame(self, name='actionfrm')
-        frame.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 4))
-        chkbtn = ttk.Checkbutton(frame, name="rec", text="Rec", command=lambda: self.action_cmds('rec'))
-        chkbtn.pack(side="left")
-        # txt = ttk.Label(frame, name="txt", width=60, text='.....')
-        # txt.pack(side="left")
-        btn = ttk.Button(frame, text="step", command=lambda: self.action_cmds('step'))
-        btn.pack(side="left")
-        btn = ttk.Button(frame, text="run", command=lambda: self.action_cmds('run'))
-        btn.pack(side="left")
-        btn = ttk.Button(frame, text="Reset", command=lambda: self.action_cmds('reset'))
-        btn.pack(side="left")
-        
-        btn = ttk.Button(frame, text="save", command=lambda: self.action_cmds('save'))
-        btn.pack(side="right")
-        btn = ttk.Button(frame, text="load", command=lambda: self.action_cmds('load'))
-        btn.pack(side="right")
-        btn = ttk.Button(frame, text="test", command=lambda: self.action_cmds('test'))
-        btn.pack(side="right")
-
-
-        frame = ttk.Frame(self, name='errorfrm')
-        frame.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 4))
-        lbl = ttk.Label(frame, text="Next action:")
-        lbl.pack(side="left")
-        self.errorReport = ttk.Label(frame, name="txt", text="....", background="grey", font=("Arial", 10), foreground="white", anchor="w")
-        self.errorReport.pack(side="left", expand=tk.YES, fill=tk.X)
-
-        # Create a frame to hold the canvas and scrollbars
-        frame = ttk.Frame(self)
-        frame.grid(column=0, row=3, sticky=(tk.N, tk.W, tk.E, tk.S))
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(0, weight=1)
-
-        # Create vertical and horizontal scrollbars
-        v_scroll = ttk.Scrollbar(frame, name='vscroll', orient="vertical")
-        h_scroll = ttk.Scrollbar(frame, name='hscroll', orient="horizontal")
-
-        # Create the SheetUI canvas
-        self.sheetui = sheetui = SheetUI(frame, name='sheetui', bg=GRID_COLOR, 
-                                yscrollcommand=v_scroll.set, 
-                                xscrollcommand=h_scroll.set,
-                                scrollregion=(1, 1, MAX_COLS, MAX_ROWS)
-        )  # Adjust scrollregion as needed
-
-            # Configure scrollbars to control the canvas
-        v_scroll.config(command=sheetui.yview)
-        h_scroll.config(command=sheetui.xview)
-
-        # Layout
-        sheetui.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
 
     def action_cmds(self, cmd):
-        self.sheetui.focus_set()
+        parent = self.nametowidget(self.winfo_parent())
+        sheetui = parent.sheetui
+        sheetui.focus_set()
         if cmd == 'save':
             idir = os.path.dirname(os.path.abspath(__file__))
             fname = filedialog.asksaveasfilename(
@@ -1665,7 +1790,7 @@ class SheetViewer(tk.Tk):
             )
             if fname:
                 if self.f_rec:
-                    wdg = self.nametowidget('.actionfrm.rec')
+                    wdg = self.nametowidget('actionfrm.rec')
                     wdg.click()
                 # Save your data to 'filename'
                 logging.debug(f"Saving to:{fname}")
@@ -1688,22 +1813,22 @@ class SheetViewer(tk.Tk):
                 with open(fname, "r") as f:
                     content = f.readlines()
                 self.action_stack = collections.deque(content)
-                self.nametowidget('.errorfrm.txt')['text'] = content[0].strip()
+                self.nametowidget('errorfrm.txt')['text'] = content[0].strip()
         elif cmd == 'rec':
-            wdg = self.nametowidget('.actionfrm.rec')
+            wdg = self.nametowidget('actionfrm.rec')
             self.f_rec = not self.f_rec
-            binds = self.sheetui.bind()
+            binds = sheetui.bind()
             if self.f_rec:
                 for bind in binds:
-                    bnd_cb = self.sheetui.bind(bind)
+                    bnd_cb = sheetui.bind(bind)
                     bnd_cb = '\n'.join([self.monitor, bnd_cb])
-                    self.sheetui.bind(bind, bnd_cb)
+                    sheetui.bind(bind, bnd_cb)
                 wdg['text'] = "Stop"
             else:
                 for bind in binds:
-                    bnd_cb = self.sheetui.bind(bind)
+                    bnd_cb = sheetui.bind(bind)
                     bnd_cb = bnd_cb.split('\n\n')[1]
-                    self.sheetui.bind(bind, bnd_cb)
+                    sheetui.bind(bind, bnd_cb)
                 wdg['text'] = "Rec"
             pass
         elif cmd == 'run':
@@ -1736,55 +1861,18 @@ class SheetViewer(tk.Tk):
             logging.debug(f"Executing action: {action}")
             # exec(action, self.action_map)
             self.front_end.exec_code(action, toArchive=True)
-            self.nametowidget('.errorfrm.txt')['text'] = self.action_stack[0].strip()
+            self.nametowidget('errorfrm.txt')['text'] = self.action_stack[0].strip()
         elif cmd == 'reset':
             # Put the canvas in a clean slate
             # self.action_stack = []
-            self.nametowidget('.errorfrm.txt')['text'] = "...."
-            self.sheetui.reset_sheet()
-        elif cmd == 'test':
-            self.state("normal")
-            self.geometry("600x400+78+78")
-            class MyApp(tk.Toplevel):
-                def destroy(totlevel):
-                    print('destroy')
-                    super().destroy()
-            top_child = MyApp(self, name='console')
-            top_child.geometry("600x400+680+78")
-            self.action_map = {'self': self, 'logging': logging, 'sheetui': self.sheetui}
-            self.front_end = fend = Frontend(top_child, context=self.action_map)
-            fend.pack(side="top", fill="both", expand=True)
-            top_child.mainloop()
-            print(top_child.winfo_children())
-            
-    def on_combobox_change(self, event):
-            fname = self.cbox.get()
-            fnc = getattr(self.sheetui, fname)
-            args = []
-            if (sig:=inspect.signature(fnc)).parameters:
-                # display a message box to get  the pivot cell coordinates
-                msg1 = f"{fname} requires parameters.\n {fname}({', '.join(p.name for p in sig.parameters.values())}) \nPlease enter parameters as integers separated with commas in the format 'x, y'."
-                answ = simpledialog.askstring(fname, msg1, parent=self)
-                if answ:
-                    try:
-                        args = list(map(lambda w: int(w), answ.split(",")))
-                    except ValueError:  
-                        fnc = lambda *args: 1
-                        print("Invalid input. Please enter parameters as integers separated with commas in the format 'x, y'.")
-                else:
-                    fnc = lambda *args: 2
-                    print("No input provided.")
-            sargs = ", ".join(map(str, args))
-            logging.debug(f"self.sheetui.{fname}({sargs})")
-            if self.f_rec:
-                saction = f"self.sheetui.{fname}({sargs})"
-                self.action_stack.append(saction)
-                # Get widget wit the name 'txt'
-                wdg = self.nametowidget('.errorfrm.txt')
-                wdg['text'] = f"{fname}({sargs})"
-            fnc(*args)
-            self.cbox.set("choose an action")
-            self.sheetui.focus_set()
+            self.nametowidget('errorfrm.txt')['text'] = "...."
+            sheetui.reset_sheet()
+
+    def destroy(self):
+        parent = self.nametowidget(self.winfo_parent())
+        parent.top_child = None
+        return super().destroy()
+
 
 
 def main():

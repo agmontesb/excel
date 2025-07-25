@@ -24,7 +24,7 @@ class Frontend(tk.Frame):
         wdg.bind('<<Caret>>', self.caret)
         # wdg.bind('<Key>', self.Key)
         
-        self.output = wdgo = tk.Text(self, name='output', font=('Courier', 11))
+        self.output = wdgo = tk.Text(self, name='output', font=('Courier', 11), cursor='arrow')
         wdgo.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         wdgo.tag_config('separator', background='black', font=('Courier', 5))
         wdgo.tag_config('cell', background='white')
@@ -36,8 +36,11 @@ class Frontend(tk.Frame):
         wdgo.tag_config('out_id', foreground='green', lmargin1=20)
         wdgo.tag_config('hide', elide=True)
         wdgo.tag_config('elipsis', foreground='blue', background='white', underline=True)
-        wdgo.tag_bind('elipsis', '<Button-1>', self.on_active_cell)
 
+        wdgo.tag_bind('elipsis', '<Button-1>', self.on_active_cell)
+        wdgo.tag_bind('elipsis', '<Enter>', self.on_enter)
+        wdgo.tag_bind('elipsis', '<Leave>', self.on_leave)
+        
         wdgo.bind('<Up>', self.on_active_cell)
         wdgo.bind('<Down>', self.on_active_cell)
         wdgo.bind('<Home>', self.on_active_cell)
@@ -46,8 +49,6 @@ class Frontend(tk.Frame):
 
         wdgo.bind('<Button-1>', self.on_active_cell)
         wdgo.bind('<Return>', self.on_output_return)
-        # wdg.bind('<FocusIn>', self.on_focus)
-        # wdgo.bind('<FocusOut>', self.on_focus)
         wdg.focus_set()
 
 
@@ -114,6 +115,12 @@ class Frontend(tk.Frame):
             ranges = ('1.0', tk.END)
         index_pairs = list(zip(ranges[::2], ranges[1::2]))
         return index_pairs
+    
+    def on_enter(self, event: tk.Event):
+        return self.config(cursor='hand1')
+    
+    def on_leave(self, event: tk.Event):
+        return self.config(cursor='')
 
     def on_active_cell(self, event: tk.Event):
         wdg: tk.Text = event.widget
@@ -141,16 +148,15 @@ class Frontend(tk.Frame):
             wdg.see(ndx)
             return 'break'
         elif keysym == 'Delete':
-            ranges = wdg.tag_ranges(tk.SEL)
-            if ranges:
-                index1, index2 = str(ranges[0]), str(ranges[-1])
-                lmark, rmark = f"M{index1.replace('.', '_')}", f"M{index2.replace('.', '_')}"
-                wdg.mark_set(lmark, index1)
-                wdg.mark_set(rmark, index2)
-                wdg.mark_gravity(lmark, tk.LEFT)
-                wdg.tag_remove(tk.SEL, index1, index2)
-                wdg.tag_add('hide', index1, index2)
-                wdg.insert(index1, f'...{(index1, index2)}\n', ('elipsis',))
+            ranges = wdg.tag_ranges(tk.SEL) or wdg.tag_ranges('active_cell')
+            index1, index2 = str(ranges[0]), str(ranges[-1])
+            lmark, rmark = f"M{index1.replace('.', '_')}", f"M{index2.replace('.', '_')}"
+            wdg.mark_set(lmark, index1)
+            wdg.mark_set(rmark, index2)
+            wdg.mark_gravity(lmark, tk.LEFT)
+            wdg.tag_remove(tk.SEL, index1, index2)
+            wdg.tag_add('hide', index1, index2)
+            wdg.insert(index1, f'...{(index1, index2)}\n', ('elipsis',))
         elif event.type.name == 'ButtonPress' and event.num == 1:
             ndx = wdg.index(f"@{event.x},{event.y}")
             names = wdg.tag_names(ndx)
@@ -361,6 +367,10 @@ def main():
     app.state('zoomed')
     fend = Frontend(app)
     fend.pack(side="top", fill="both", expand=True)
+
+    output = fend.nametowidget('output')
+    context = {'output': output}
+    fend.context = context
 
     app.mainloop()
 
