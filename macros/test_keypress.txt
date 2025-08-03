@@ -1,0 +1,192 @@
+content = lambda x, y: sheetui.screen_cell_content(x, y, isCoord=False)
+sheetui.set_selected_cells(4, 6)
+<test>
+x0, y0 = sheetui.active_cell
+assert (x0, y0) == (4, 6), f'Test 1: set_selected_cells method, {x0=}, {y0=} != (4, 6)'
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 1: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+#
+# Test <Down>, <Right>, <Up> and <Left>
+#
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Down', keycode=40, x=115, y=15, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Down', keycode=40, x=115, y=15, sendevent=True)
+</test>
+<test>
+x1, y1 = sheetui.active_cell
+assert x0 == x1 and y0 == y1 - 1, f'Test 2: Down KeyPress, {x0=}, {y0=} != {x1=}, {y1-1=}'
+x0, y0 = x1, y1
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 2: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Right', keycode=39, x=301, y=-46, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Right', keycode=39, x=301, y=-46, sendevent=True)
+</test>
+<test>
+x1, y1 = sheetui.active_cell
+assert x0 + 1 == x1 and y0 == y1, f'Test 3: Right KeyPress, {x0=}, {y0=} != {x1 - 1=}, {y1=}'
+x0, y0 = x1, y1
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 3: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Up', keycode=38, x=292, y=-52, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Up', keycode=38, x=292, y=-52, sendevent=True)
+</test>
+<test>
+x1, y1 = sheetui.active_cell
+assert x0 == x1 and y0 == y1 + 1, f'Test 4: Up KeyPress, {x0=}, {y0=} != {x1=}, {y1 + 1=}'
+x0, y0 = x1, y1
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 4: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Left', keycode=37, x=280, y=-44, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x40000, keysym='Left', keycode=37, x=280, y=-44, sendevent=True)
+</test>
+<test>
+x1, y1 = sheetui.active_cell
+assert x0 == x1 + 1 and y0 == y1, f'Test 5: Left KeyPress, {x0=}, {y0=} != {x1 + 1=}, {y1=}'
+x0, y0 = x1, y1
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 5: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+#
+# Test <Return> and <Shift>+<Return>
+#
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', keysym='Return', keycode=13, x=277, y=-48, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Return', keycode=13, x=277, y=-48, sendevent=True)
+</test>
+<test>
+x1, y1 = sheetui.active_cell
+assert x0 == x1 and y0 == y1 - 1, f'Test 6: Left KeyPress, {x0=}, {y0=} != {x1=}, {y1 - 1=}'
+x0, y0 = x1, y1
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 6: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Return', keycode=13, x=243, y=-47, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Return', keycode=13, x=243, y=-47, sendevent=True)
+</test>
+<test>
+x1, y1 = sheetui.active_cell
+assert x0 == x1 and y0 == y1 + 1, f'Test 7: Shift + Return KeyPress, {x0=}, {y0=} != {x1=}, {y1 + 1=}'
+x0, y0 = x1, y1
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 7: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+#
+# Test <Tab> and <Shift>+<Tab>
+#
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', keysym='Tab', keycode=9, x=704, y=73, sendevent=True)
+sheetui.event_generate('<KeyPress>', keysym='Tab', keycode=9, x=704, y=73, sendevent=True)
+</test>
+<test>
+x1, y1 = sheetui.active_cell
+assert x0 + 1 == x1 and y0 == y1, f'Test 8: Tab KeyPress, {x0=}, {y0=} != {x1 - 1=}, {y1=}'
+x0, y0 = x1, y1
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 8: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Tab', keycode=9, x=704, y=73, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00001, keysym='Tab', keycode=9, x=704, y=73, sendevent=True)
+</test>
+<test>
+x1, y1 = sheetui.active_cell
+assert x0 == x1 + 1 and y0 == y1, f'Test 9: Shift + Tab KeyPress, {x0=}, {y0=} != {x1 + 1=}, {y1=}'
+x0, y0 = x1, y1
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 9: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+#
+# Test <Control>+<Right>, <Control>+<Down>, <Control>+<Left> and <Control>+<Up>
+#
+</test>
+sheetui.set_selected_cells(1, 1)
+<test>
+sheetui.event_generate('<KeyPress>', state=0x00004|0x40000, keysym='Right', keycode=39, x=435, y=112, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00004|0x40000, keysym='Right', keycode=39, x=435, y=112, sendevent=True)
+</test>
+<test>
+x0, y0 = sheetui.active_cell
+assert x0 == 100 and y0 == 1, f'Test 10: Control + Left KeyPress, {x0=}, {y0=} != 100, 1'
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 10: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', state=0x00004|0x40000, keysym='Down', keycode=40, x=1056, y=278, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00004|0x40000, keysym='Down', keycode=40, x=1056, y=278, sendevent=True)
+</test>
+<test>
+x0, y0 = sheetui.active_cell
+assert x0 == 100 and y0 == 1000, f'Test 11: Control + Down KeyPress, {x0=}, {y0=} != 100, 1000'
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 11: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', state=0x00004|0x40000, keysym='Left', keycode=37, x=1064, y=278, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00004|0x40000, keysym='Left', keycode=37, x=1064, y=278, sendevent=True)
+</test>
+<test>
+x0, y0 = sheetui.active_cell
+assert x0 == 1 and y0 == 1000, f'Test 12: Control + Left KeyPress, {x0=}, {y0=} != 1, 1000'
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 12: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+sheetui.event_generate('<KeyPress>', state=0x00004|0x40000, keysym='Up', keycode=38, x=1033, y=278, sendevent=True)
+sheetui.event_generate('<KeyPress>', state=0x00004|0x40000, keysym='Up', keycode=38, x=1033, y=278, sendevent=True)
+</test>
+<test>
+x0, y0 = sheetui.active_cell
+assert x0 == 1 and y0 == 1, f'Test 13: Control + Up KeyPress, {x0=}, {y0=} != 1, 1'
+assert f"C{x0}R{y0}" == content(x0, y0), f'Test 13: screen_cell_content, C{x0}R{y0} != {content(x0, y0)}'
+</test>
+<test>
+#
+# Test <Next> and <Prior>
+#
+</test>
+<test>
+vpos = []
+axis = 1
+vp1_orig = sheetui.quadrant_origin(1)[axis]
+height = sheetui.look.winfo_height
+for k in range(5):
+    vpos.append(sheetui.active_cell)
+    y_required = sheetui.tag_id(height, axis=axis)
+    sheetui.event_generate('<KeyPress>', keysym='Next', keycode=34, x=706, y=210, sendevent=True)
+    y = sheetui.tag_id(vp1_orig, axis=axis)
+    assert y == y_required, f'Test 14: <Next>, the viewport origin fail {y=} != {y_required=}' 
+</test>
+vpos.append(sheetui.active_cell)
+<test>
+for k in range(5):
+    assert vpos[-1 - k] == sheetui.active_cell, f'Test 15: <Prior>, fail at case {k=}, {vpos[-1-k]} != {sheetui.active_cell}'
+    sheetui.event_generate('<KeyPress>', keysym='Prior', keycode=33, x=791, y=281, sendevent=True)
+</test>
+assert vpos[0] == sheetui.active_cell, f'Test 14: <Prior>, fail at case k=5, {vpos[-1-k]} != {sheetui.active_cell}'
+<test>
+#
+# Test <Alt>+<Next> and <Alt>+<Prior>
+#
+</test>
+<test>
+vpos = []
+axis = 0
+vp1_orig = sheetui.quadrant_origin(1)[axis]
+height = sheetui.look.winfo_width
+for k in range(5):
+    vpos.append(sheetui.active_cell)
+    y_required = sheetui.tag_id(height, axis=axis)
+    sheetui.event_generate('<KeyPress>', state=0x20000, keysym='Next', keycode=34, x=706, y=210, sendevent=True)
+    y = sheetui.tag_id(vp1_orig, axis=axis)
+    assert y == y_required, f'Test 15: <Alt>+<Next>, the viewport origin fail {y=} != {y_required=}' 
+</test>
+vpos.append(sheetui.active_cell)
+<test>
+for k in range(5):
+    assert vpos[-1 - k] == sheetui.active_cell, f'Test 15: <Prior>, fail at case {k=}, {vpos[-1-k]} != {sheetui.active_cell}'
+    sheetui.event_generate('<KeyPress>', state=0x20000, keysym='Prior', keycode=33, x=791, y=281, sendevent=True)
+</test>
+assert vpos[0] == sheetui.active_cell, f'Test 16: <Alt>+<Prior>, fail at case k=5, {vpos[-1-k]} != {sheetui.active_cell}'

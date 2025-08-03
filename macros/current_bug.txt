@@ -1,6 +1,26 @@
-self.nametowidget('.!frame2.sheetui').event_generate('<ButtonPress-1>', x=18, y=94)
-self.nametowidget('.!frame2.sheetui').event_generate('<ButtonRelease-1>', state=0x00100, x=18, y=94)
-self.nametowidget('.!frame2.sheetui').event_generate('<KeyPress>', state=0x00001|0x40000, keysym='Down', keycode=40, x=18, y=94, sendevent=True)
-self.nametowidget('.!frame2.sheetui').event_generate('<KeyPress>', state=0x00001|0x40000, keysym='Down', keycode=40, x=18, y=94, sendevent=True)
-self.sheetui.set_rows_height(30)
-self.nametowidget('.!frame2.sheetui').event_generate('<KeyPress>', state=0x40000, keysym='Up', keycode=38, x=233, y=192, sendevent=True)
+content = lambda x, y: sheetui.screen_cell_content(x, y, isCoord=False)
+sheetui.set_selected_cells(4, 6)
+<test>
+#
+# Test <Alt>+<Next> and <Alt>+<Prior>
+#
+</test>
+<test>
+vpos = []
+axis = 0
+vp1_orig = sheetui.quadrant_origin(1)[axis]
+height = sheetui.look.winfo_width
+for k in range(5):
+    vpos.append(sheetui.active_cell)
+    y_required = sheetui.tag_id(height, axis=axis)
+    sheetui.event_generate('<KeyPress>', state=0x20000, keysym='Next', keycode=34, x=706, y=210, sendevent=True)
+    y = sheetui.tag_id(vp1_orig, axis=axis)
+    assert y == y_required, f'Test 15: <Alt>+<Next>, the viewport origin fail {y=} != {y_required=}' 
+</test>
+vpos.append(sheetui.active_cell)
+<test>
+for k in range(5):
+    assert vpos[-1 - k] == sheetui.active_cell, f'Test 15: <Prior>, fail at case {k=}, {vpos[-1-k]} != {sheetui.active_cell}'
+    sheetui.event_generate('<KeyPress>', state=0x20000, keysym='Prior', keycode=33, x=791, y=281, sendevent=True)
+</test>
+assert vpos[0] == sheetui.active_cell, f'Test 16: <Alt>+<Prior>, fail at case k=5, {vpos[-1-k]} != {sheetui.active_cell}'

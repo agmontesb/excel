@@ -48,6 +48,7 @@ class SheetState(Flag):
     HEADINGS = auto()
 
 
+
 def cell_content_gen(nquadrant: int, x: int, y: int) -> str:
     """Generates the content for a cell based on its quadrant and cell coordinates."""
     if nquadrant == 1:
@@ -265,6 +266,11 @@ class SheetLook:
             return 3
         return 4
     
+    def quadrant_origin(self, nquadrant: int, isCoord: bool=True) -> tuple[int, int]:
+        """Returns the origin of the given quadrant as cell(isCoord=False) or coordinates (isCoord=True)."""
+        answ = self.quadrant_data(nquadrant)[isCoord]
+        return answ[:2]
+
     def quadrant_data(self, nquadrant:int) -> tuple[tuple[int, ...], tuple[int, int]]:
         """Returns the (vieport, coords_viewport) for the given quadrant."""
         if nquadrant == 1:
@@ -301,7 +307,7 @@ class SheetLook:
             items = self.canvas.find_enclosed(coords_viewport[0] - 1, clinf_y - 1, gx1 + 1, gy1 + 1)
             self.canvas.delete(*items)
             viewport_x0 = x
-            ptx0 = self.coords_vportq3[0], clinf_y
+            ptx0 = coords_viewport[0], clinf_y
         elif deltax < 0:
             # left displacement
             x0 = x
@@ -500,7 +506,7 @@ class SheetUI(tk.Canvas):
         "Delegate attribute access to the look object"
         if attr in self.look.__dir__():
             return getattr(self.look, attr)
-        return super().__getattr__(attr)
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{attr}'")
     
     def reset_sheet(self):
         self.look = SheetLook(self)
@@ -519,8 +525,13 @@ class SheetUI(tk.Canvas):
             self.setGUI()  # Redraw the sheet with the new viewport
             self.tag_raise("freeze_line")  # Move freeze_line above all tags
     
-    def screen_cell_content(self, x0:int, y0:int, x1:int, y1:int) -> str:
+    def screen_cell_content(self, x0:int, y0:int, *br_corner: tuple[int, int], isCoord: bool=True) -> str:
         """Returns the content of the screen area."""
+        if isCoord:
+            x1, y1 = br_corner
+        else:
+            x1, y1 = (br_corner or (x0, y0))
+            x0, y0, x1, y1 = self.area_coordinates(x0, y0, x1, y1)
         items = self.find_enclosed(x0, y0, x1, y1)
         if items:
             return self.itemcget(items[0], "text")
@@ -1150,7 +1161,7 @@ class SheetUI(tk.Canvas):
             [self.itemconfig(item, state="normal") for item in self.find_withtag("hgrid_lines")]
         self.look.flags ^= SheetState.GRIDLINES
     
-    def toggle_freeze_panes(self, *args):
+    def toggle_freeze_panes(self):
         if self.look.flags & SheetState.FREEZE is SheetState.NONE:
             x0, y0, x1, y1 = self.viewport_q3
             coord_acx, coord_acy = self.cell_coordinates(*self.active_cell)[:2]
@@ -1413,15 +1424,13 @@ class SheetUI(tk.Canvas):
                 delta = int(args[1])
                 keysym = 'Prior' if delta < 0 else 'Next'
                 viewport_y0 = self.viewport_q1[1]
-                ytop, ybottom = self.cell_coordinates(0, viewport_y0)[1::2]
                 if keysym == "Next":
-                    viewport_y0 = self.cell_containing_coords(0, ytop + (self.winfo_height() - ROW_CELLS_HEIGHT))[1]
-                    viewport_y0 = min(MAX_ROWS, max(1, viewport_y0))
+                    viewport_y0 = self.cell_containing_coords(0, self.winfo_height())[1]
                 else:
-                    viewport_y0 = self.cell_containing_coords(0, ybottom - (self.winfo_height() - ROW_CELLS_HEIGHT))[1]
-                    viewport_y0 = min(MAX_ROWS, max(1, viewport_y0))
-                fraction = (viewport_y0 - self.viewport_q3[3]) / (MAX_ROWS - self.viewport_q3[3])
-                self.yview_moveto(fraction)
+                    ytop, ybottom = self.cell_coordinates(0, viewport_y0)[1::2]
+                    viewport_y0 = self.cell_containing_coords(0, ybottom - (self.winfo_height() - ytop))[1]
+                viewport_y0 = min(MAX_ROWS, max(1, viewport_y0))
+                self.yview_moveto(viewport_y0)
             self.show_ws_elements()
         elif args[0] == 'moveto':
             self.yview_moveto(args[1])
@@ -1472,15 +1481,13 @@ class SheetUI(tk.Canvas):
                 delta = int(args[1])
                 keysym = 'Prior' if delta < 0 else 'Next'
                 viewport_x0 = self.viewport_q1[0]
-                xtop, xbottom = self.cell_coordinates(viewport_x0, 0)[::2]
                 if keysym == "Next":
-                    viewport_x0 = self.cell_containing_coords(xtop + (self.winfo_width() - COL_CELLS_WIDTH), 0)[0]
-                    viewport_x0 = min(MAX_COLS, max(1, viewport_x0))
+                    viewport_x0 = self.cell_containing_coords(self.winfo_width(), 0)[0]
                 else:
-                    viewport_x0 = self.cell_containing_coords(xbottom - (self.winfo_width() - COL_CELLS_WIDTH), 0)[0]
-                    viewport_x0 = min(MAX_COLS, max(1, viewport_x0))
-                fraction = (viewport_x0 - self.viewport_q3[2]) / (MAX_COLS - self.viewport_q3[2])
-                self.xview_moveto(fraction)
+                    xtop, xbottom = self.cell_coordinates(viewport_x0, 0)[::2]
+                    viewport_x0 = self.cell_containing_coords(xbottom - (self.winfo_width() - xtop), 0)[0]
+                viewport_x0 = min(MAX_COLS, max(1, viewport_x0))
+                self.xview_moveto(viewport_x0)
             self.show_ws_elements()
         elif args[0] == 'moveto':
             self.xview_moveto(args[1])
@@ -1512,7 +1519,8 @@ class SheetViewer(tk.Tk):
         self.top_child = None
         self.named_range = {}
         self.fnc_to_test = [
-            "choose an action", 
+            "choose an action",
+            "set_selected_cells", 
             "delete_rows", "insert_rows", "set_rows_height", 
             "delete_columns", "insert_columns", "set_cols_width", 
             "toggle_areas_drawn", "toggle_headings", 
@@ -1564,7 +1572,6 @@ class SheetViewer(tk.Tk):
         else:
             self.sheetui.set_selected_cells(*new_value)
         self.sheetui.focus_set()
-
 
     def on_activecell_click(self, event):
         wdg: ttk.Combobox = event.widget
@@ -1654,14 +1661,17 @@ class SheetViewer(tk.Tk):
                     print("No input provided.")
             sargs = ", ".join(map(str, args))
             logging.debug(f"self.sheetui.{fname}({sargs})")
-            top_child = self.top_child
+            top_child: MacrosUI = self.top_child
             if top_child and top_child.f_rec == True:
                 saction = f"sheetui.{fname}({sargs})"
                 top_child.action_stack.append(saction)
+                fend: Frontend = top_child.front_end
+                fend.input_code(saction, toArchive=True)
                 # Get widget wit the name 'txt'
                 wdg = top_child.nametowidget('errorfrm.txt')
                 wdg['text'] = f"{fname}({sargs})"
-            fnc(*args)
+            else:
+                fnc(*args)
             self.cbox.set("choose an action")
         self.sheetui.focus_set()
 
@@ -1692,20 +1702,29 @@ class MacrosUI(tk.Toplevel):
 
         frame = ttk.Frame(self, name='actionfrm')
         frame.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 4))
-        chkbtn = ttk.Checkbutton(frame, name="rec", text="Rec", command=lambda: self.action_cmds('rec'))
+        lframe = ttk.LabelFrame(frame, text="Recorder", name="recorder_actions")
+        lframe.pack(side="left", padx=4, pady=4)
+        chkbtn = ttk.Checkbutton(lframe, name="rec", text="Rec", command=lambda: self.action_cmds('rec'))
         chkbtn.pack(side="left")
-        btn = ttk.Button(frame, text="step", command=lambda: self.action_cmds('step'))
+        btn = ttk.Button(lframe, text="step", command=lambda: self.action_cmds('step'))
         btn.pack(side="left")
-        btn = ttk.Button(frame, text="run", command=lambda: self.action_cmds('run'))
+        btn = ttk.Button(lframe, text="run", command=lambda: self.action_cmds('run'))
         btn.pack(side="left")
-        btn = ttk.Button(frame, text="Reset", command=lambda: self.action_cmds('reset'))
+
+        lframe = ttk.LabelFrame(frame, text="Reset", name="reset_actions")
+        lframe.pack(side="left", padx=4, pady=4)
+        btn = ttk.Button(lframe, text="Sheet", command=lambda: self.action_cmds('reset_sheet'))
         btn.pack(side="left")
-        
-        btn = ttk.Button(frame, text="save", command=lambda: self.action_cmds('save'))
+        btn = ttk.Button(lframe, text="Stack", command=lambda: self.action_cmds('reset_stack'))
+        btn.pack(side="left")
+        btn = ttk.Button(lframe, text="History", command=lambda: self.action_cmds('reset_history'))
+        btn.pack(side="left")
+
+        lframe = ttk.LabelFrame(frame, text="File", name="file_actions")
+        lframe.pack(side="right", padx=4, pady=4)
+        btn = ttk.Button(lframe, text="save", command=lambda: self.action_cmds('save'))
         btn.pack(side="right")
-        btn = ttk.Button(frame, text="load", command=lambda: self.action_cmds('load'))
-        btn.pack(side="right")
-        btn = ttk.Button(frame, text="test", command=lambda: self.action_cmds('test'))
+        btn = ttk.Button(lframe, text="load", command=lambda: self.action_cmds('load'))
         btn.pack(side="right")
 
         frame = ttk.Frame(self, name='errorfrm')
@@ -1722,6 +1741,8 @@ class MacrosUI(tk.Toplevel):
         pass
     
     def event_monitor(self, event):
+        if self.front_end.event_simulation:
+            return
         wdg = event.widget
         # wname = f"{wdg.winfo_parent()}.{wdg.winfo_name()}"
         wname = wdg.winfo_name()
@@ -1772,7 +1793,8 @@ class MacrosUI(tk.Toplevel):
         # Get widget wit the name 'txt'
         wdg = self.nametowidget('errorfrm.txt')
         wdg['text'] = saction.rsplit('.', 1)[-1]
-
+        fend: Frontend = self.front_end
+        fend.input_code(saction, toArchive=True, genOutput=False)
 
     def action_cmds(self, cmd):
         parent = self.nametowidget(self.winfo_parent())
@@ -1790,11 +1812,28 @@ class MacrosUI(tk.Toplevel):
             )
             if fname:
                 if self.f_rec:
-                    wdg = self.nametowidget('actionfrm.rec')
-                    wdg.click()
+                    wdg = self.nametowidget('actionfrm.recorder_actions.rec')
+                    # wdg.click()
                 # Save your data to 'filename'
                 logging.debug(f"Saving to:{fname}")
-                content = '\n'.join(self.action_stack)
+                fend = self.front_end
+                output: tk.Text = fend.nametowidget('output')
+                hranges = output.tag_ranges('hide')
+                ranges = ('1.0',) + hranges + ('end',) if hranges else ('1.0', 'end')
+                content = ''
+                for i in range(0, len(ranges), 2):
+                    index1, index2 = ranges[i], ranges[i + 1]
+                    while crange := output.tag_nextrange('cell', index1, index2):
+                        cell_input = []
+                        cndx1, cndx2 = crange[0], crange[1]
+                        while irange := output.tag_nextrange('input', cndx1, cndx2):
+                            cell_input.append(output.get(irange[0], irange[1]))
+                            cndx1 = irange[1]
+                        cell_str = ''.join(cell_input)
+                        if cell_str.count('\n') > 1:
+                            cell_str = '<test>\n' + cell_str.strip() + '\n</test>\n'
+                        content += f"{cell_str}"
+                        index1 = crange[1]
                 with open(fname, "w") as f:
                     f.write(content)
         elif cmd == 'load':
@@ -1811,11 +1850,11 @@ class MacrosUI(tk.Toplevel):
                 # Load your data from 'filename'
                 logging.debug(f"Loading from:{fname}")
                 with open(fname, "r") as f:
-                    content = f.readlines()
+                    content = ['<start/>'] + f.readlines()
                 self.action_stack = collections.deque(content)
                 self.nametowidget('errorfrm.txt')['text'] = content[0].strip()
         elif cmd == 'rec':
-            wdg = self.nametowidget('actionfrm.rec')
+            wdg = self.nametowidget('actionfrm.recorder_actions.rec')
             self.f_rec = not self.f_rec
             binds = sheetui.bind()
             if self.f_rec:
@@ -1832,41 +1871,63 @@ class MacrosUI(tk.Toplevel):
                 wdg['text'] = "Rec"
             pass
         elif cmd == 'run':
-            if (action := self.action_stack[0].strip()) == '<start/>':
-                self.action_stack.append(self.action_stack.popleft())
-            while (action := self.action_stack[0].strip()) != '<start/>':
+            while True:
                 self.action_cmds('step')
+                if (action := self.action_stack[0].strip()) == '<start/>':
+                    break
             self.action_map = {'self': self, 'logging': logging}
         elif cmd == 'step':
             if (action := self.action_stack[0]).strip() == '<start/>':
                 self.action_map = {'self': self, 'logging': logging}
                 self.action_stack.append(self.action_stack.popleft())
+            comment = ''
             while True:
                 action = self.action_stack[0]
                 self.action_stack.append(self.action_stack.popleft())
                 action = action.rstrip()
                 # Comments skipped (allowed as a complete line).
-                if action and action[0] != '#':
-                    break
+                if action: 
+                    if action[0] != '#':
+                        break
+                    comment += "\n" + action
+            if comment:
+                logging.debug(f"Comment: {comment.strip()}")
+                self.front_end.input_code(comment.strip(), toArchive=True)
+                sheetui.focus_set()
             if action == '<test>':
                 test = ''
                 while True:
+                    action = self.action_stack[0].rstrip()
                     self.action_stack.append(self.action_stack.popleft())
-                    if (action := self.action_stack[0].rstrip()) == '</test>':
-                        action = '# ' + action
-                        self.action_stack.append(self.action_stack.popleft())
+                    if action == '</test>':
                         break
                     test += "\n" + action
-                action = test
+                action = test.strip()
             logging.debug(f"Executing action: {action}")
-            # exec(action, self.action_map)
-            self.front_end.exec_code(action, toArchive=True)
+            self.front_end.event_simulation = True
+            self.front_end.input_code(action, toArchive=True)
+            self.front_end.event_simulation = False
             self.nametowidget('errorfrm.txt')['text'] = self.action_stack[0].strip()
-        elif cmd == 'reset':
+        elif cmd == 'reset_sheet':
             # Put the canvas in a clean slate
             # self.action_stack = []
             self.nametowidget('errorfrm.txt')['text'] = "...."
             sheetui.reset_sheet()
+            try:
+                ndx = self.action_stack.index('<start/>')
+            except ValueError:
+                ndx = 0
+            if ndx > 0:
+                action_stack = self.action_stack[ndx:] + self.action_stack[:ndx]
+                self.action_stack = collections.deque(action_stack)
+        elif cmd == 'reset_stack':
+            # Reset the action stack
+            self.action_stack = collections.deque()
+            self.nametowidget('errorfrm.txt')['text'] = "...."
+        elif cmd == 'reset_history':
+            # Reset the action history
+            self.front_end.reset_history()
+            self.nametowidget('errorfrm.txt')['text'] = "...."
 
     def destroy(self):
         parent = self.nametowidget(self.winfo_parent())

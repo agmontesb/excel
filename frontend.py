@@ -1,4 +1,5 @@
 import ast
+import re
 import sys
 import traceback
 import tkinter as tk
@@ -19,7 +20,8 @@ class Frontend(tk.Frame):
         wdg.bind('<Up>', self.history)
         wdg.bind('<Down>', self.history)
         wdg.bind('<Control-c>', self.clear_prompt)
-        wdg.bind('<braceleft>', self.braceleft)
+        wdg.event_add('<<KeyPairs>>', '<braceleft>', '<bracketleft>', '<parenleft>')
+        wdg.bind('<<KeyPairs>>', self.on_key_pairs)
         wdg.event_add('<<Caret>>', '<End>', '<Home>', '<Right>', '<Left>')
         wdg.bind('<<Caret>>', self.caret)
         # wdg.bind('<Key>', self.Key)
@@ -58,8 +60,18 @@ class Frontend(tk.Frame):
 
         self.history_list = []
         self.history_index = len(self.history_list)
+        self.event_simulation = False
+
         self.prompt = lambda: f"In [{len(self.history_list) + 1}]: "
         wdg.insert(tk.INSERT, self.prompt())
+
+    def reset_history(self):
+        """Reset the history of commands."""
+        self.history_list = []
+        self.history_index = 0
+        self.input.delete('1.0', tk.END)
+        self.input.insert(tk.INSERT, self.prompt())
+        self.output.delete('1.0', tk.END)
 
     def on_output_return(self, event: tk.Event):
         wdg:tk.Text = event.widget
@@ -77,17 +89,18 @@ class Frontend(tk.Frame):
                 output.append(wdg.get(index0, index1))
             if output:
                 output = ''.join(output).rstrip()
+                self.event_simulation = isAltPressed
+                self.input_code(output, toArchive=isAltPressed)
+                self.event_simulation = False
                 if isCtrlPressed:
-                    self.exec_code(output, toArchive=False)
-                elif isAltPressed:
-                    self.exec_code(output, toArchive=True)
+                    self.input.focus_set()
                 return 'break'
         keysym = 'Up' if isShiftPressed else 'Down'
         event.state = 0
         event.keysym = keysym
         return self.on_active_cell(event)
 
-    def exec_code(self, text, toArchive=False):
+    def input_code(self, text, toArchive=False, genOutput=True):
         wdg = self.input
         wdg.delete("1.0", tk.END)
         to_insert, *suffix = text.split('\n')
@@ -98,7 +111,7 @@ class Frontend(tk.Frame):
             for to_insert in suffix:
                 wdg.insert(tk.END, prefix + to_insert)
         if toArchive:
-            self.archive()
+            self.archive(genOutput=genOutput)
 
     def on_focus(self, event: tk.Event):
         wdg: tk.Text = event.widget
@@ -181,19 +194,35 @@ class Frontend(tk.Frame):
         line, col = map(int, wdg.index(tk.INSERT).split('.'))
         if event.keysym == 'Left':
             if col <= len(self.prompt()):
-                col = len(self.prompt())
+                if line == 1:
+                    col = len(self.prompt())
+                else:
+                    line -= 1
+                    col = 'end'
             else:
                 col -= 1
-        if event.keysym == 'Home':
+        elif event.keysym == 'Right':
+            if wdg.index(f'{line}.end') == wdg.index(tk.INSERT):
+                lend, cend = map(int, wdg.index(tk.END).split('.'))
+                if line + 1 >= lend:
+                    col = 'end'
+                else:
+                    line += 1
+                    col = len(self.prompt())
+            else:
+                col += 1
+        elif event.keysym == 'Home':
             col = len(self.prompt())
         elif event.keysym == 'End':
             col = 'end'
         wdg.mark_set(tk.INSERT, f'{line}.{col}')
         return 'break'
 
-    def braceleft(self, event: tk.Event):
+    def on_key_pairs(self, event: tk.Event):
         wdg = event.widget
-        wdg.insert(tk.INSERT, '{}')
+        pairs = '{}[]()' 
+        n = pairs.index(event.char)
+        wdg.insert(tk.INSERT, pairs[n:n + 2])
         wdg.mark_set(tk.INSERT, 'insert-1c')
         return 'break'
 
@@ -250,6 +279,7 @@ class Frontend(tk.Frame):
         return 'break'
 
     def on_input_return(self, event: tk.Event):
+        self.event_simulation = True
         wdg:tk.Text = event.widget
         currentline, endline = map(lambda x: int(wdg.index(x).split('.')[0]), (tk.INSERT, tk.END))
         with_control = event.state & 0x4
@@ -259,18 +289,34 @@ class Frontend(tk.Frame):
             wdg.insert(tk.INSERT, f"\n{'...: ':>{n}}" + indent * '    ')
             pos = wdg.index(tk.INSERT)
             if wdg.get(pos) == '}':
-                wdg.insert(tk.INSERT, '\n... ' + (indent - 1) * '    ')
+                wdg.insert(tk.INSERT, f"\n{'...: ':>{n}}" + (indent - 1) * '    ')
             wdg.mark_set(tk.INSERT, pos)
             return 'break'
         self.archive()
+        self.event_simulation = False
         return self.clear_prompt(event)
 
     def pythonize(self, raw_text):
+        """Convert the raw text input into a format suitable for execution."""
+        # Remove the prompt "In [?]: " or " ...: " 
         n = raw_text.index(': ') + 2
         lines = [x[n:] for x in raw_text.splitlines()]
+
+        # Remove space prefixes
         first_indent = len(lines[0]) - len(lines[0].lstrip())
         if first_indent:
             lines = [x[first_indent:] for x in lines]
+
+        # For any "generate_event" assure the focus is on the widget that generated the event.
+        dmy = []
+        for line in lines:
+            if m := re.search(r'(\w+)\.event_generate\(', line):
+                widget_name = m.group(1)
+                indent = (len(line) - len(line.lstrip())) * ' '
+                dmy.append(f'{indent}{widget_name}.focus_set()')
+            dmy.append(line)
+        lines = dmy
+
         last_line, lines = lines[-1], lines[:-1]
         if lines:
             last_indent = len(last_line) - len(last_line.lstrip())
@@ -285,22 +331,28 @@ class Frontend(tk.Frame):
                 last_line = ''
         return '\n'.join(lines), last_line
 
-    def archive(self):
+    def archive(self, genOutput=True):
         wdg = self.input
         raw_text = wdg.get("1.0", tk.END)
-        if raw_text[len(self.prompt()):] == '\n':
+        if raw_text.count('\n') == 1 and raw_text[len(self.prompt()):] == '\n':  
+            # If the input is just a newline make nothing
             return 'break'
-        self.history_list.append(raw_text.strip())
-        self.history_index = 1 + len(self.history_list)
-        self.clear_prompt()
-        # wdg.delete("1.0", tk.END)
-        # wdg.insert(tk.INSERT, self.prompt())
+        # self.clear_prompt()
+        isComment = raw_text.count(': ') == raw_text.count(': #')
+        if isComment:
+            prefix, raw_text = raw_text.split(': ', 1)
+            prefix  = (len(prefix) - 3) * ' ' + '[#]: '
+            raw_text = prefix + raw_text
         self.write_input(raw_text)
-        if not raw_text[len(self.prompt()):]:
-            self.destroy()
-        self.execute(raw_text)
+        if not isComment:
+            # If the input is just a comment don't archive or execute it
+            self.history_list.append(raw_text.strip())
+            self.history_index = 1 + len(self.history_list)
+            if genOutput:
+                self.execute(raw_text)
         self.write('\n', tags=('inner_separator', 'cell'))
         self.write('\n', tags=('separator',))
+        self.clear_prompt()
         wdg.focus_set()
         return 'break'
     
