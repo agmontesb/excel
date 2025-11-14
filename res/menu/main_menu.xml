@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<menu label="master" tearoff="false">
+    <cascade label="File" tearoff="false" src="@menu/file_menu"/>
+    <cascade label="View" tearoff="false" src="@menu/view_menu"/>
+</menu>

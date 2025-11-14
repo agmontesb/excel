@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings>
+    <category label="Category uno">
+        <var type="boolean" name="view_headings" value="1"/>
+        <var type="boolean" name="view_gridlines" value="1"/>
+        <frame side="top" fill="x">
+            <combobox name="cb_sheet_selector" values="Sheet1 Sheet2 Sheet3" side="right" padx="5" pady="5"/>
+            <label text="Active Sheet:" side="right" padx="5" pady="5"/>
+            <menubar lib="mywidgets.Widgets.Custom" name="main_menu" src="@menu/main_menu" side="left" fill="x"/>
+        </frame>
+        <frame side="top" fill="x">
+            <combobox name="cb_named_range" values="" side="left" padx="5" pady="5"/>
+            <label name="lbl_cell_content" text="" anchor="ne" background="white" side="left" fill="x" expand="yes" padx="5" pady="5"/>
+        </frame>
+        <frame geomanager="grid" columnconfigure0="weight=1" rowconfigure0="weight=1" side="top" fill="both" expand="yes">
+            <scrollbar name="vscroll" orient="vertical" row="0" column="1" sticky="ns"/>
+            <scrollbar name="hscroll" orient="horizontal" row="1" column="0" sticky="ew"/>
+            <SheetUI lib="worksheetui" name="sheetui" bg="lightgray" row="0" column="0" sticky="nsew"/>
+        </frame>
+    </category>
+</settings>
+

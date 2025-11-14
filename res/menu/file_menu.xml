@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<menu label="File" tearoff="false">
+    <command label="Open" accelerator="Ctrl+O" command="" />
+    <separator />
+    <cascade label="Open Recent" tearoff="false">
+    </cascade>
+</menu>

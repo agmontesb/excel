@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<menu label="View" tearoff="false">
+    <checkbutton label="Headings" variable="view_headings"/>
+    <checkbutton label="Gridlines" variable="view_gridlines"/>
+    <separator/>
+    <command label="Freeze Panes"  command=""/>
+    <command label="Freeze Top Row"  command=""/>
+    <command label="Freeze First Column" command=""/>
+</menu>
