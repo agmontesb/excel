@@ -2,7 +2,8 @@ import tkinter as tk
 import tkinter.messagebox as tkMessageBox
 import logging
 import re
-from openpyxl import load_workbook
+import openpyxl
+import excelxml
 
 import mywidgets.userinterface as userinterface
 from mywidgets.Tools.mywinzip.file_menu import FileMenu
@@ -26,9 +27,12 @@ def alpha_code(id, nbase=26):
 
 
 class WbViewer(tk.Tk):
+
+    wb_manager = excelxml
     
     def __init__(self):
         super().__init__()
+        # self.sheetui: SheetUI
         self.event_add('<<MENUCLICK>>', 'None')
         self.event_add('<<VAR_CHANGE>>', 'None')
         self.bind_all('<<MENUCLICK>>', self.onMenuClick)
@@ -71,10 +75,17 @@ class WbViewer(tk.Tk):
                 self.sheetui.format_header = None
         self._r1c1_flag = value
 
-    def on_active_cell_changed(self, event):
+    def on_active_cell_changed(wb, event):
         wdg: SheetUI = event.widget
-        acell_x, acell_y = wdg.active_cell
-        self.lbl_cell_content['text'] = self.sheetui.cell_content(0, acell_x, acell_y)
+        if wb.wb:
+            cell = wb.wb[wb.active_sheet].cell(*wdg.active_cell[::-1])
+            try:
+                item = cell.formula
+            except AttributeError:
+                item = cell.value
+        else:
+            item = test_content_gen(0, *wdg.active_cell[::-1])
+        wb.lbl_cell_content['text'] = str(item)
 
     def on_selected_cells_changed(self, event):
         wdg: SheetUI = event.widget
@@ -202,6 +213,14 @@ class WbViewer(tk.Tk):
                 self.sheetui.toggle_headings()
             case 'view_gridlines':
                 self.sheetui.toggle_gridlines()
+            case 'fml_r1c1':
+                self.r1c1_flag = value
+                self.sheetui.redraw_headings()
+            case 'wb_loader':
+                if value == 'openpyxl':
+                    self.wb_manager = openpyxl
+                else:
+                    self.wb_manager = excelxml
 
     def onMenuClick(self, event):
         menu_master, indx = event.widget, event.data
@@ -244,11 +263,11 @@ class WbViewer(tk.Tk):
         menu, menu_item = menu_master.cget("title"), menu_master.entrycget(indx, "label")
         logger.debug(f"Menu '{menu}' item selected: '{menu_item}'")
         if menu == 'file':
-            match menu_item.split():
-                case 'Open',:
+            match menu_item:
+                case 'Open':
                     with self.fmngr.openFile() as filename:
                         assert filename
-                        self.loadwb(filename, mode='a')
+                        self.loadwb(filename)
                     pass
                 case _:
                     pass
@@ -258,7 +277,8 @@ class WbViewer(tk.Tk):
             assert wbfilename.endswith(filename)
             self.loadwb(wbfilename, mode='a')
     
-    def loadwb(self, filename, mode='r'):
+    def loadwb(self, filename):
+        load_workbook = getattr(self.wb_manager, 'load_workbook')
         try:
             self.wb = wb = load_workbook(filename)
             sheet_names = wb.sheetnames

@@ -605,6 +605,21 @@ class SheetUI(tk.Canvas):
             for area in to_draw:
                 self.tag_area(*area, tag="cells_to_draw")
 
+    def redraw_headings(self):
+        look = self.look
+        cx0, cy0 = look.coords_vportq3
+        cx1, cy1 = look.cell_coordinates(*look.viewport_q1[2:])[2:]
+        area = (cx0, 0, cx1, cy0)
+        self.delete('columns_tag')
+        self.delete('vgrid_lines')
+        self.tag_area(*area, tag="invalid_area")
+        area = (0, cy0, cx0, cy1)
+        self.delete('rows_tag')
+        self.delete('vgrid_lines')
+        self.tag_area(*area, tag="invalid_area")
+        self.setGUI()
+        self.show_ws_elements()
+
     def tag_area(self, *area, tag, cnfg=None):
         kwargs = {"fill": "lightblue", "outline": "black", "width": 4, "stipple": "gray50", "tags": tag}
         if cnfg:
@@ -1074,6 +1089,7 @@ class SheetUI(tk.Canvas):
             self.xview('scroll', '-1', 'units')
             self.yview('scroll', '-1', 'units')
             self.show_ws_elements()
+        pass
 
     def set_selected_cells(self, x0:int, y0:int, *br_corner:tuple[int,int]):
         """Sets the selected cells."""

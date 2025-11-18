@@ -3,6 +3,8 @@
     <category label="Category uno">
         <var type="boolean" name="view_headings" value="1"/>
         <var type="boolean" name="view_gridlines" value="1"/>
+        <var type="boolean" name="fml_r1c1" value="1"/>
+        <var type="string" name="wb_loader" value="excelxml"/>
         <frame side="top" fill="x">
             <combobox name="cb_sheet_selector" values="Sheet1 Sheet2 Sheet3" side="right" padx="5" pady="5"/>
             <label text="Active Sheet:" side="right" padx="5" pady="5"/>

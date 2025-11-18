@@ -4,4 +4,11 @@
     <separator />
     <cascade label="Open Recent" tearoff="false">
     </cascade>
+    <separator />
+    <cascade label="Options" tearoff="false">
+        <checkbutton label="Formula R1C1" variable="fml_r1c1"/>
+        <separator />
+        <radiobutton label="excelxml" variable="wb_loader" value="excelxml"/>
+        <radiobutton label="openpyxl" variable="wb_loader" value="openpyxl"/>
+    </cascade>
 </menu>

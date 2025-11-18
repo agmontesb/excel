@@ -2054,7 +2054,5 @@ class ExcelTable(ExcelObject):
         data = self.excel_table(t, fill_value='')
         return data._repr_html_()
 
-    
-
 if __name__ == '__main__':
     pass
