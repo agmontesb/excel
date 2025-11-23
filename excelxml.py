@@ -248,14 +248,47 @@ class WorkBookXml:
             wb_fname = zf.extract(wb_info, path=tmpdir)
             self.ws_fname[key] = wb_fname
 
-        content = self.get_content('xl/workbook.xml')
-        wb_pattern = '(?#<sheet name=name r:id="rId(\\d+)"=id>)'
-        cpattern = MarkupRe.compile(wb_pattern)
-        self._sheet_names = {key: f'xl/worksheets/sheet{id}.xml' for key, id in cpattern.findall(content)}
         self.sheet_obs = {}
         self.default_range = default_range
-        self.active = self.__getitem__(self.sheetnames[0])
+        sheet_id = self.parse_workbook_xlm()
+        active_sheet = self.sheetnames[sheet_id]
+        self.active = self.__getitem__(active_sheet)
         pass
+
+    def parse_workbook_xlm(self):
+        content = self.get_content('xl/workbook.xml')
+
+        # Active sheet
+        wb_pattern = '(?#<workbookView activeTab=_tabId>)'
+        cpattern = MarkupRe.compile(wb_pattern)
+        active_sheet = cpattern.findall(content)[0] or '0'
+
+        # Sheet names
+        wb_pattern = '(?#<sheet name=name r:id=id>)'
+        cpattern = MarkupRe.compile(wb_pattern)
+        self._sheet_names = {key: f'xl/worksheets/sheet{id}.xml' for key, id in cpattern.findall(content)}
+
+        # Named ranges
+        wb_pattern = '(?#<definedName name=name *=rng>)'
+        cpattern = MarkupRe.compile(wb_pattern)
+        try:
+            defined_names = {name: rng for name, rng in cpattern.findall(content)}
+            self._defined_names = defined_names
+        except Exception as e:
+            logger.debug(f'Error loading named ranges: {str(e)}')
+            self._defined_names = {}
+        return int(active_sheet)
+
+    def parse_worksheet_xlm(self, ws_name):
+        if ws_name not in self.sheet_obs:
+            try:
+                fml_map, val_map = self.data_in_range(ws_name, self.default_range)
+                self.sheet_obs[ws_name] = WorkSheetXml(ws_name, fml_map, val_map)
+            except Exception as e:
+                msg = f'Error loading worksheet "{ws_name}": {str(e)}'
+                logger.debug(msg)
+                raise Exception(msg)
+        return self.sheet_obs[ws_name]
 
     @property
     def sheetnames(self):
@@ -273,6 +306,9 @@ class WorkBookXml:
 
     def __getitem__(self, key):
         assert key in self.sheetnames, "Not a valid Woksheet name"
+        return self.parse_worksheet_xlm(key)
+
+    def __getattr__(self, key):
         if key not in self.sheet_obs:
             try:
                 fml_map, val_map = self.data_in_range(key, self.default_range)

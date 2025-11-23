@@ -1,3 +1,5 @@
+import shutil
+import tempfile
 import tkinter as tk
 import os
 import zipfile
@@ -23,7 +25,8 @@ class ExcelXmlViewer(tk.Toplevel):
         self.messageVar = tk.StringVar()
         self.geometry(geometry)
         self.setGUI()
-
+        self.filename = ''
+        self.zf = None
         self.load_zf(zf)
         # self.state('zoomed')
         self.geometry("600x400")
@@ -31,7 +34,12 @@ class ExcelXmlViewer(tk.Toplevel):
 
     def load_zf(self, zf: zipfile.ZipFile | str):
         if isinstance(zf, str):
-            zf = zipfile.ZipFile(zf)
+            self.btn_reload['state'] = 'normal'
+            self.filename = zf
+            tmpdir = tempfile.gettempdir()
+            dstfile = shutil.copy(zf, tmpdir)
+            shutil.copystat(zf, dstfile)
+            zf = zipfile.ZipFile(dstfile)
         self.zf = zf
         filename = zf.filename
         root = f'/{os.path.basename(filename)}'
@@ -74,6 +82,7 @@ class ExcelXmlViewer(tk.Toplevel):
         # self.txtEditor.textw.bind('<Button-3>', self.do_popup)
 
         self.statusBar.Message.config(textvariable=self.messageVar)
+        self.btn_reload['command'] = self.reload
         pass
 
     def onVarChange(self, event=None, attr_data=None):
@@ -108,9 +117,13 @@ class ExcelXmlViewer(tk.Toplevel):
     def register_widget(self, master, xmlwidget, widget):
         attribs = xmlwidget.attrib
         name = attribs.get('name')
-        if name in ('filetree', 'fpath', 'regexBar', 'txtEditor', 'tree', 'statusBar',):
+        if name in ('btn_reload', 'filetree', 'fpath', 'regexBar', 'txtEditor', 'tree', 'statusBar',):
             setattr(self, name, widget)
         pass
+
+    def reload(self):
+        if self.filename:
+            self.load_zf(self.filename)
 
     def setContent(self, data, newUrl=True):
         self.txtEditor.setContent(data)
@@ -190,7 +203,7 @@ class ExcelXmlViewer(tk.Toplevel):
 
 def main():
     root = tk.Tk()
-    zf = r'C:\Users\agmontesb\Documents\GitHub\excel\tests\files\excel_module_test.zip'
+    zf = r'C:\Users\agmontesb\Documents\GitHub\excel\tests\files\excel_module_test.xlsx'
     wbv = ExcelXmlViewer(root, zf, geometry='1200x1200')        # create the Toplevel viewer
     # wbv.transient(root)           # associate it with the hidden root
     wbv.protocol("WM_DELETE_WINDOW", root.destroy)  # close app when viewer closes
@@ -200,4 +213,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
