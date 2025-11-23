@@ -2,12 +2,15 @@ import tkinter as tk
 import tkinter.messagebox as tkMessageBox
 import logging
 import re
+import os
+import fnmatch
 import openpyxl
 import excelxml
 
 import mywidgets.userinterface as userinterface
 from mywidgets.Tools.mywinzip.file_menu import FileMenu
 from mywidgets.equations import equations_manager
+from excelxml_viewer import ExcelXmlViewer
 from worksheetui import SheetState, SheetUI, test_content_gen, SheetLook
 
 logging.basicConfig(level=logging.DEBUG)
@@ -45,6 +48,11 @@ class WbViewer(tk.Tk):
         fmngr.default_extension = '.xlsx'
         # fmngr.default_file_type = [('Excel Workbook', '*.xlsx'), ('Excel 97-2003 Workbook', '*.xls')]
         fmngr.default_file_type = ('Excel Workbook', '*.xlsx')
+        if logger.isEnabledFor(logging.DEBUG):
+            test_dir = r'C:\Users\agmontesb\Documents\GitHub\excel\tests\files'
+            ldir = os.listdir(test_dir)
+            [fmngr.recFile(os.path.join(test_dir, nfile)) for nfile in fnmatch.filter(ldir, '[!~$]*.xlsx') ]
+
 
         self.ws_ctxs = {}
         self.named_range = {}
@@ -53,6 +61,7 @@ class WbViewer(tk.Tk):
         # self.r1c1_flag = False
 
         self.wb = None
+        self.geometry("600x400")
         pass
 
     def content_gen(self, nquadrant, x, y):
@@ -135,9 +144,25 @@ class WbViewer(tk.Tk):
         except AttributeError:
             pass
 
+        try:
+            btn_xmlview = self.btn_xmlview
+            btn_xmlview['command'] = self.on_btn_xmlview_click
+        except AttributeError:
+            pass
+
         self.bind("<<SelectedCellsChanged>>", self.on_selected_cells_changed)
         self.bind("<<ActiveCellChanged>>", self.on_active_cell_changed)
         pass
+
+    def on_btn_xmlview_click(self, filename=None):
+        self.state("normal")
+        self.geometry("600x400+78+78")
+        try:
+            zf = filename or getattr(self.wb, 'zf', self.title())
+            self.top_child = top_child = ExcelXmlViewer(self, zf, geometry="600x400+680+78")
+            top_child.mainloop()
+        except:
+            pass
 
     def on_cbrange_focusin(self, event):
         """Selects all text in the combobox when clicked or focused."""
@@ -268,14 +293,13 @@ class WbViewer(tk.Tk):
                     with self.fmngr.openFile() as filename:
                         assert filename
                         self.loadwb(filename)
-                    pass
                 case _:
                     pass
         elif menu == 'open recent':
             indx, filename = menu_item.split()
             wbfilename = self.fmngr.fileHistory[int(indx) - 1]
             assert wbfilename.endswith(filename)
-            self.loadwb(wbfilename, mode='a')
+            self.loadwb(wbfilename)
     
     def loadwb(self, filename):
         load_workbook = getattr(self.wb_manager, 'load_workbook')
@@ -292,8 +316,15 @@ class WbViewer(tk.Tk):
 
         except Exception as e:
             tkMessageBox.showerror(title='Loading Error', message=str(e))
+            # self.wb = None
+            # self.title = ''
+            self.btn_xmlview['state'] = 'disabled'
+            self.on_btn_xmlview_click(filename)
+            raise Exception(str(e))
+        
         self.fmngr.fileHistory = self.fmngr.recFile(filename)
         self.fmngr.title(filename)
+        self.btn_xmlview['state'] = 'normal'
 
     def registerMenu(self, parent, selPane, menu_master, labels):
         title = menu_master.cget('title')
@@ -304,7 +335,7 @@ class WbViewer(tk.Tk):
     def register_widget(self, master, xmlwidget, widget):
         attribs = xmlwidget.attrib
         name = attribs.get('name')
-        if name in ('cb_sheet_selector', 'cb_named_range', 'lbl_cell_content', 'sheetui'):
+        if name in ('btn_xmlview', 'cb_sheet_selector', 'cb_named_range', 'lbl_cell_content', 'sheetui'):
             setattr(self, name, widget)
         pass
 

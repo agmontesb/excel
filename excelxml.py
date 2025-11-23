@@ -197,6 +197,7 @@ def regex_range(range_str:str) -> str:
     row_regex = interval_regex(row1, row2, *digit_set)
     return f'{col_regex}{row_regex}'
 
+DEFAULT_RANGE = 'A1:CV1000'   # equivalent to 'R1C1:R100C1000
 
 class WorkSheetXml:
     Cell = collections.namedtuple('Cell', ['address', 'formula', 'value'])
@@ -234,7 +235,7 @@ class WorkSheetXml:
 
 class WorkBookXml:
 
-    def __init__(self, fname):
+    def __init__(self, fname, default_range=DEFAULT_RANGE):
         self.tmpdir = tmpdir = tempfile.gettempdir()
         dstfile = shutil.copy(fname, tmpdir)
         shutil.copystat(fname, dstfile)
@@ -252,6 +253,7 @@ class WorkBookXml:
         cpattern = MarkupRe.compile(wb_pattern)
         self._sheet_names = {key: f'xl/worksheets/sheet{id}.xml' for key, id in cpattern.findall(content)}
         self.sheet_obs = {}
+        self.default_range = default_range
         self.active = self.__getitem__(self.sheetnames[0])
         pass
 
@@ -272,8 +274,13 @@ class WorkBookXml:
     def __getitem__(self, key):
         assert key in self.sheetnames, "Not a valid Woksheet name"
         if key not in self.sheet_obs:
-            fml_map, val_map = self.data_in_range(key, 'A1:I20')
-            self.sheet_obs[key] = WorkSheetXml(key, fml_map, val_map)
+            try:
+                fml_map, val_map = self.data_in_range(key, self.default_range)
+                self.sheet_obs[key] = WorkSheetXml(key, fml_map, val_map)
+            except Exception as e:
+                msg = f'Error loading worksheet "{key}": {str(e)}'
+                logger.debug(msg)
+                raise Exception(msg)
         return self.sheet_obs[key]
 
     def extract_data(wb, content, regex_pattern, seek_pattern=None):
@@ -281,13 +288,11 @@ class WorkBookXml:
         if seek_pattern:
             it._seeker = re.compile(seek_pattern)
         values = []
-        parameters = None
         for grp_d in it.finditer(content):
             parameters = getattr(grp_d, 'parameters', [])
             items = [*parameters, *grp_d.groupdict().values()]
             values.append(items)
-        params_fields = parameters._fields if parameters else []
-        keys = [*params_fields, *grp_d.groupdict().keys()]
+        keys = [*it.get_seeker().groupindex.keys(), *it.groupindex.keys()]
         df = pd.DataFrame(values, columns=keys)
         return df
 
@@ -299,8 +304,9 @@ class WorkBookXml:
         items = MarkupRe.findall(regex_str, content)
         return items
     
-    def data_in_range(wb, ws_name, ws_range:str, allCells=True) -> tuple[dict, dict]:
+    def data_in_range(wb, ws_name, ws_range:str=None, allCells=True) -> tuple[dict, dict]:
         content = wb.get_content(ws_name)
+        ws_range = ws_range or wb.default_range
         df_val = wb.get_values(content, ws_range, allCells=True)
         df_fml = wb.get_formulas(content, ws_range, allCells=True)
         if not allCells and (to_pop := df_fml.keys() & df_val.keys()):
@@ -313,33 +319,58 @@ class WorkBookXml:
         seek_str = f'<c\\s[^>]*r="{range_regex}"[^>]*[/]*>'
         val_regex = f'(?#<c r="{range_regex}"=adr t=_tv v.*=val>)'
         if not allCells:
-            val_regex = f'(?#<c r="{range_regex}"=adr __NCHILDREN__="2" v.*=val>)'
+            val_regex = f'(?#<c r="{range_regex}"=adr __NCHILDREN__="2" t=_tv v.*=val>)'
         shared = wb.shared_strings
-        df = wb.extract_data(content, val_regex, seek_str)
-        mask = df.tv == 's'
-        df.loc[mask, 'val'] = df.loc[mask, 'val'].astype(int).map(lambda x: shared[x])
-        pairs = (
-            df
-            .drop(columns=['tv'])
-            .rename(columns={'val': 'value', 'adr': 'address'})
-            .set_index('address')
-            .sort_index(key=lambda ndx: ndx.map(lambda x: '{1: >4s}-{0: >4s}'.format(*cell_pattern.match(x).groups())))
-            .value
-            .to_dict()
-            # .items()
-        )
-        return pairs
+        try:
+            df = wb.extract_data(content, val_regex, seek_str)
+            mask = df.tv == 's'
+            df.loc[mask, 'val'] = df.loc[mask, 'val'].astype(int).map(lambda x: f'"{shared[x]}"')
+            pairs = (
+                df
+                .drop(columns=['tv'])
+                .rename(columns={'val': 'value', 'adr': 'address'})
+                .set_index('address')
+                .sort_index(key=lambda ndx: ndx.map(lambda x: '{1: >4s}-{0: >4s}'.format(*cell_pattern.match(x).groups())))
+                .value
+                .to_dict()
+                # .items()
+            )
+            cell_errors = []
+            values = {}
+            for key, value in pairs.items():
+                try:
+                    value = eval(value)
+                except Exception as e:
+                    cell_errors.append(key)
+                    value = '#ERROR!'
+                values[key] = value
+            if cell_errors:
+                dmy = ', '.join(cell_errors)
+                msg = f'Error calculating values in cells: {dmy}'
+                raise Exception(msg)
+        except Exception as e:
+            msg = f'Error loading values: {str(e)} {val_regex}'
+            logger.debug(msg)
+            raise Exception(msg)
+        return values
 
     def get_formulas(wb, content, ws_range, allCells=True):
         range_regex = regex_range(ws_range)
         seek_str = f'<c\\s[^>]*r="{range_regex}"[^>]*[/]*>'
         fml_regex = f'(?#<c r="{range_regex}"=adr f.ref=_adr f.*=".+?"=fml>)'
-        fml_raw = (
-            wb.extract_data(content, fml_regex, seek_str)
-            .set_index('adr')
-            .fml.to_dict()
-            .items()
-        )
+        try:
+            df = wb.extract_data(content, fml_regex, seek_str)
+            fml_raw = (
+                df
+                .set_index('adr')
+                .fml.to_dict()
+                .items()
+            )
+        except Exception as e:
+            msg = f'Error loading values: {fml_regex}'
+            logger.debug(msg)
+            raise Exception(msg)
+        
 
         if allCells:
             pairs = []
@@ -367,20 +398,8 @@ class WorkBookXml:
                     pairs.append((adr, fml))
         else:
             pairs = fml_raw
-
-        return dict(pairs)
-
-
-def load_workbookOLD(filename):
-    xml_book = WorkBookXml(filename)
-    sheets = xml_book.sheetnames
-
-    excel_wb = ExcelWorkbook(filename)
-    for k, ws_name in enumerate(sheets, 1):
-        wsheet = excel_wb.create_worksheet(ws_name)
-        fmls, values = xml_book.data_in_range(ws_name, 'E2:I17')
-        sht_tbl = ExcelTable(wsheet, f'sheet{k}_tbl', 'E2:I17', fmls, values)
-    return excel_wb
+        fmls = {key: '=' + value.lstrip('+') for key, value in pairs}
+        return fmls
 
 
 def load_workbook(filename):

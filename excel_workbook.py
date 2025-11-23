@@ -10,7 +10,20 @@ from typing import Protocol, Type
 from collections.abc import Callable
 from enum import Enum, Flag
 
+import excelxml
 import xlfunctions as xlf
+
+def alpha_code(id, nbase=26):
+    answ = []
+    while id:
+        res = id % nbase
+        id = id // nbase
+        if res == 0:
+            res = nbase
+            id -=1
+        answ.append(chr(ord('A') + res - 1))
+    return ''.join(answ[::-1])
+
 
 TABLE_DATA_MAP = {
     'fml': str, 'dependents': object, 'res_order': int, 
@@ -1822,14 +1835,16 @@ class ExcelTable(ExcelObject):
                     continue
             linf_cell = cell_address(linf)
             lsup_cell = cell_address(lsup)
+            fnc = lambda x: sum((ord(c) - ord('A') + 1) * (26 ** i) for i, c in enumerate(reversed(x)))
+            linf_cell, lsup_cell = map(lambda x: (int(x[0]), int(fnc(x[1]))), (linf_cell, lsup_cell))
             cell_rgn.update(
                 [
                     f'{prefix}{col}{row}' for row, col in itertools.product(
-                    [x for x in range(int(linf_cell[0]), int(lsup_cell[0]) + 1)],
-                    [chr(x) for x in range(ord(linf_cell[1]), ord(lsup_cell[1]) + 1)])
+                    [x for x in range(linf_cell[0], lsup_cell[0] + 1)],
+                    [alpha_code(x) for x in range(linf_cell[1], lsup_cell[1] + 1)])
                 ]
             )
-        cell_rgn = sorted(cell_rgn, key=lambda x: '{0: >4s}{1}'.format(*cell_address(x)))
+        cell_rgn = sorted(cell_rgn, key=lambda x: '{0: >4s}{1: >4s}'.format(*cell_address(x)))
         return cell_rgn
 
     @classmethod
@@ -2054,5 +2069,25 @@ class ExcelTable(ExcelObject):
         data = self.excel_table(t, fill_value='')
         return data._repr_html_()
 
-if __name__ == '__main__':
+
+def load_workbook(filename):
+    wbxlm = excelxml.load_workbook(filename)
+    excel_wb = ExcelWorkbook(filename)
+    all_range = 'E2:I17'   # wbxlm.default_range
+    for k, ws_name in enumerate(wbxlm.sheetnames, 1):
+        wsheet = excel_wb.create_worksheet(ws_name)
+        fmls, values = wbxlm.data_in_range(ws_name, all_range, allCells=False)
+        sht_tbl = ExcelTable(wsheet, f'sheet{k}_tbl', all_range, fmls, values)
+    return excel_wb
+
+def main():
+    # from tests.fixtures import dynamic_workbook
+    # dynamic_workbook = dynamic_workbook.__wrapped__
+    # wb = dynamic_workbook()
+
+    fname = r'C:\Users\agmontesb\Documents\GitHub\excel\tests\files\excel_module_test.xlsx'
+    excel_wb = load_workbook(fname)
     pass
+
+if __name__ == '__main__':
+    main()
