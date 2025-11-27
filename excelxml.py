@@ -1,3 +1,5 @@
+from html import unescape
+import os
 import zipfile
 import shutil
 import tempfile
@@ -10,7 +12,10 @@ import numpy as np
 from typing import Literal
 
 import mywidgets.Tools.uiStyle.MarkupRe as MarkupRe
-from excel_workbook import ExcelTable, ExcelWorkbook
+from mywidgets.Widgets.Custom import navigationbar
+
+from xlobjects import XlErrors
+
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -236,17 +241,16 @@ class WorkSheetXml:
 class WorkBookXml:
 
     def __init__(self, fname, default_range=DEFAULT_RANGE):
-        self.tmpdir = tmpdir = tempfile.gettempdir()
-        dstfile = shutil.copy(fname, tmpdir)
-        shutil.copystat(fname, dstfile)
-        self.zf = zf = zipfile.ZipFile(dstfile, 'a')
-
+        loader = OXLLoader(fname)
+        self.zf = loader
+        zf = loader.zf
         self.file_map = {x.filename: x for x in zf.filelist}
         self.ws_fname = {}
-        for key in ('xl/workbook.xml', 'xl/sharedStrings.xml'):
-            wb_info = self.file_map[key]
-            wb_fname = zf.extract(wb_info, path=tmpdir)
-            self.ws_fname[key] = wb_fname
+        # tmpdir = os.path.dirname(loader.filename)
+        # for key in ('xl/workbook.xml', 'xl/sharedStrings.xml'):
+        #     wb_info = self.file_map[key]
+        #     wb_fname = zf.extract(wb_info, path=tmpdir)
+        #     self.ws_fname[key] = wb_fname
 
         self.sheet_obs = {}
         self.default_range = default_range
@@ -256,7 +260,8 @@ class WorkBookXml:
         pass
 
     def parse_workbook_xlm(self):
-        content = self.get_content('xl/workbook.xml')
+        loader = self.zf
+        content = loader.load_xmlfile('xl/workbook.xml', isAbs=False)
 
         # Active sheet
         wb_pattern = '(?#<workbookView activeTab=_tabId>)'
@@ -266,7 +271,7 @@ class WorkBookXml:
         # Sheet names
         wb_pattern = '(?#<sheet name=name r:id=id>)'
         cpattern = MarkupRe.compile(wb_pattern)
-        self._sheet_names = {key: f'xl/worksheets/sheet{id}.xml' for key, id in cpattern.findall(content)}
+        self._sheet_names = {key: f'xl/worksheets/sheet{id[3:]}.xml' for key, id in cpattern.findall(content)}
 
         # Named ranges
         wb_pattern = '(?#<definedName name=name *=rng>)'
@@ -294,30 +299,9 @@ class WorkBookXml:
     def sheetnames(self):
         return list(self._sheet_names.keys())
 
-    def get_content(self, key):
-        if key not in self.ws_fname:
-            key_info = self._sheet_names[key]
-            item_info = self.file_map[key_info]
-            item_fname = self.zf.extract(item_info, path=self.tmpdir)
-            self.ws_fname[key] = item_fname
-        with open(self.ws_fname[key], 'r', encoding='utf-8') as f:
-            content = f.read()
-        return content
-
     def __getitem__(self, key):
         assert key in self.sheetnames, "Not a valid Woksheet name"
         return self.parse_worksheet_xlm(key)
-
-    def __getattr__(self, key):
-        if key not in self.sheet_obs:
-            try:
-                fml_map, val_map = self.data_in_range(key, self.default_range)
-                self.sheet_obs[key] = WorkSheetXml(key, fml_map, val_map)
-            except Exception as e:
-                msg = f'Error loading worksheet "{key}": {str(e)}'
-                logger.debug(msg)
-                raise Exception(msg)
-        return self.sheet_obs[key]
 
     def extract_data(wb, content, regex_pattern, seek_pattern=None):
         it = MarkupRe.compile(regex_pattern)
@@ -334,14 +318,46 @@ class WorkBookXml:
 
     @property
     def shared_strings(self):
+        loader = self.zf
         key = 'xl/sharedStrings.xml'
-        content = self.get_content(key)
+        content = loader.load_xmlfile(key, isAbs=False)
         regex_str = '(?#<t *=shared_str>)'
         items = MarkupRe.findall(regex_str, content)
         return items
     
     def data_in_range(wb, ws_name, ws_range:str=None, allCells=True) -> tuple[dict, dict]:
-        content = wb.get_content(ws_name)
+        loader = wb.zf
+        rpath = wb._sheet_names[ws_name]
+        content = loader.load_xmlfile(rpath, isAbs=False)
+        # dimension element: 18.3.1.35 dimension (Worksheet Dimensions)
+        rgx_str = '(?#<dimension ref=dim>)'
+        dim = MarkupRe.findall(rgx_str, content)[0]
+
+        # sheetView element: 18.3.1.86 sheetView (Chart Sheet View)
+        rgx_str = '(?#<sheetView (topLeftCell) showGridLines=_showGridLines showRowColHeaders=_showRowColHeaders>)'
+        topLeftCell, showGridLines, showRowColHeaders = MarkupRe.findall(rgx_str, content)[0]
+        showGridLines, showRowColHeaders = (showGridLines != '0'), (showRowColHeaders != '0')
+
+        # 18.3.1.66 pane (View Pane)
+        # This element only exists if the worksheet contains panes (split or frozen).
+        rgx_str = '(?#<pane xSplit=_xSplit ySplit=_ysplit (topLeftCell) (activePane) (state)>)'
+        panes = MarkupRe.findall(rgx_str, content)
+        if panes:
+            # Only consider when state is "frozen" or "frozenSplit", because in 
+            # this version the split panes is not implemented
+            pass
+
+        # 18.3.1.78 selection (Selection)
+        # Exist one (no freeze panes), two (topRow or leftColumn freeze) or three (freeze panes) 
+        # of this element. the pane attib is optional.
+        rgx_str = '(?#<selection (activeCell) (sqref) pane=_pane>)'
+
+        # 18.3.1.13 col (Column Width & Formatting)
+        
+
+
+
+
         ws_range = ws_range or wb.default_range
         df_val = wb.get_values(content, ws_range, allCells=True)
         df_fml = wb.get_formulas(content, ws_range, allCells=True)
@@ -353,37 +369,70 @@ class WorkBookXml:
     def get_values(wb, content, ws_range: str, allCells=True):
         range_regex = regex_range(ws_range)
         seek_str = f'<c\\s[^>]*r="{range_regex}"[^>]*[/]*>'
-        val_regex = f'(?#<c r="{range_regex}"=adr t=_tv v.*=val>)'
+        val_regex = f'(?#<c r="{range_regex}"=adr t=_t s=_s v.*=val>)'
         if not allCells:
-            val_regex = f'(?#<c r="{range_regex}"=adr __NCHILDREN__="2" t=_tv v.*=val>)'
+            val_regex = f'(?#<c r="{range_regex}"=adr __NCHILDREN__="2" t=_t s=_s v.*=val>)'
         shared = wb.shared_strings
         try:
-            df = wb.extract_data(content, val_regex, seek_str)
-            mask = df.tv == 's'
-            df.loc[mask, 'val'] = df.loc[mask, 'val'].astype(int).map(lambda x: f'"{shared[x]}"')
-            pairs = (
-                df
-                .drop(columns=['tv'])
-                .rename(columns={'val': 'value', 'adr': 'address'})
-                .set_index('address')
-                .sort_index(key=lambda ndx: ndx.map(lambda x: '{1: >4s}-{0: >4s}'.format(*cell_pattern.match(x).groups())))
-                .value
-                .to_dict()
-                # .items()
+            df = (
+                wb.extract_data(content, val_regex, seek_str)
+                .set_index('adr')
             )
-            cell_errors = []
-            values = {}
-            for key, value in pairs.items():
-                try:
-                    value = eval(value)
-                except Exception as e:
-                    cell_errors.append(key)
-                    value = '#ERROR!'
-                values[key] = value
-            if cell_errors:
-                dmy = ', '.join(cell_errors)
-                msg = f'Error calculating values in cells: {dmy}'
-                raise Exception(msg)
+            
+            # values = df.set_index('adr').val.to_dict()
+            # cell_type = df.set_index('adr').t.to_dict()
+            # cell_style = df.set_index('adr').s.to_dict()
+
+
+            # ECMA-376 18.18.11
+            # t = s (Shared String): Cell containing a shared string.
+            # [values.__setitem__(key, shared[int(value)]) for key, value in cell_type.items() if value.isnumeric()]
+            mask = df.t == 's'
+            shrd = df.loc[mask, 'val'].astype(int).map(lambda x: shared[x]).to_dict()
+
+            # t = str (String): Cell containing a formula string.
+            # t = inlineStr (Inline String): Cell containing an inline string.
+            # mask = (df.t == 'str') | (df.t == 'inlineStr') 
+            # df.loc[mask, 'val'] = df.loc[mask, 'val'].map(lambda x: x) # No se hace nada, ya que el valor ya está como cadena
+            
+            # t = e (Error): Cell containing an error.
+            mask = df.t == 'e'
+            errs = df.loc[mask, 'val'].map(lambda x: XlErrors(x)).to_dict()
+
+            # t = b (Boolean): Cell containing a boolean.
+            mask = df.t == 'b'
+            bools = df.loc[mask, 'val'].astype(int).map(lambda x: x != 0).to_dict()
+
+            # t = n (Number)
+            mask = (df.t == 'n') | (df.t.isna())
+            nums = {key: eval(val) for key, val in df.loc[mask, 'val'].to_dict().items()}
+
+            values = {**nums, **bools, **errs, **shrd}
+
+
+            # values = (
+            #     df
+            #     .drop(columns=['t', 's'])
+            #     .rename(columns={'val': 'value', 'adr': 'address'})
+            #     .set_index('address')
+            #     .sort_index(key=lambda ndx: ndx.map(lambda x: '{1: >4s}-{0: >4s}'.format(*cell_pattern.match(x).groups())))
+            #     .value
+            #     .to_dict()
+            #     # .items()
+            # )
+            # cell_errors = []
+            # values = {}
+            # for key, value in pairs.items():
+            #     try:
+            #         value = eval(value)
+            #     except Exception as e:
+            #         cell_errors.append(key)
+            #         value = '#ERROR!'
+            #     values[key] = value
+            # if cell_errors:
+            #     dmy = ', '.join(cell_errors)
+            #     msg = f'Error calculating values in cells: {dmy}'
+            #     logger.debug(msg)
         except Exception as e:
             msg = f'Error loading values: {str(e)} {val_regex}'
             logger.debug(msg)
@@ -398,6 +447,7 @@ class WorkBookXml:
             df = wb.extract_data(content, fml_regex, seek_str)
             fml_raw = (
                 df
+                .assign(fml=lambda db: db.fml.map(unescape))
                 .set_index('adr')
                 .fml.to_dict()
                 .items()
@@ -436,6 +486,36 @@ class WorkBookXml:
             pairs = fml_raw
         fmls = {key: '=' + value.lstrip('+') for key, value in pairs}
         return fmls
+
+
+class OXLLoader:
+
+    def __init__(self, filename: str):
+        self.filename = filename
+        tmpdir = tempfile.gettempdir()
+        dstfile = shutil.copy(filename, tmpdir)
+        shutil.copystat(filename, dstfile)
+        zf = zipfile.ZipFile(dstfile)
+        self.zf = zf
+        root = f'/{os.path.basename(filename)}'
+        namelist = [root + '/' + x for x in zf.namelist()]
+        navigationbar.StrListObj.SEP = '/'
+        self.path_obj = navigationbar.StrListObj(namelist, root)
+        pass
+
+    def load_xmlfile(self, path, isAbs=True):
+        if isAbs:
+            rpath = self.path_obj.relpath(path, self.path_obj.root)
+        else:
+            rpath = path
+        content = self.zf.read(rpath).decode('utf-8')
+        return content
+    
+
+    
+
+    
+
 
 
 def load_workbook(filename):
