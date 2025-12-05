@@ -27,8 +27,6 @@ def alpha_code(id, nbase=26):
         answ.append(chr(ord('A') + res - 1))
     return ''.join(answ[::-1])
 
-
-
 class WbViewer(tk.Tk):
 
     wb_manager = excelxml
@@ -48,17 +46,15 @@ class WbViewer(tk.Tk):
         fmngr.default_extension = '.xlsx'
         # fmngr.default_file_type = [('Excel Workbook', '*.xlsx'), ('Excel 97-2003 Workbook', '*.xls')]
         fmngr.default_file_type = ('Excel Workbook', '*.xlsx')
-        if logger.isEnabledFor(logging.DEBUG):
-            test_dir = r'C:\Users\agmontesb\Documents\GitHub\excel\tests\files'
-            ldir = os.listdir(test_dir)
-            [fmngr.recFile(os.path.join(test_dir, nfile)) for nfile in fnmatch.filter(ldir, '[!~$]*.xlsx') ]
-
-
         self.ws_ctxs = {}
         self.named_range = {}
         self.active_sheet = self.cb_sheet_selector.get()
-        self._r1c1_flag = True
-        # self.r1c1_flag = False
+        self._r1c1_flag = False
+        if logger.isEnabledFor(logging.DEBUG):
+            self._r1c1_flag = True
+            test_dir = r'C:\Users\agmontesb\Documents\GitHub\excel\tests\files'
+            ldir = os.listdir(test_dir)
+            [fmngr.recFile(os.path.join(test_dir, nfile)) for nfile in fnmatch.filter(ldir, '[!~$]*.xlsx') ]
 
         self.wb = None
         self.geometry("600x400")
@@ -69,7 +65,6 @@ class WbViewer(tk.Tk):
             return test_content_gen(nquadrant, x, y)
         sheet = self.wb[self.active_sheet]
         return sheet.cell(row=y, column=x).value
-
 
     @property
     def r1c1_flag(self) -> bool:
@@ -86,19 +81,20 @@ class WbViewer(tk.Tk):
 
     def on_active_cell_changed(wb, event):
         wdg: SheetUI = event.widget
+        active_cell = wdg.sht_ctx.active_cell[::-1]
         if wb.wb:
-            cell = wb.wb[wb.active_sheet].cell(*wdg.active_cell[::-1])
+            cell = wb.wb[wb.active_sheet].cell(*active_cell)
             try:
                 item = cell.formula
             except AttributeError:
                 item = cell.value
         else:
-            item = test_content_gen(0, *wdg.active_cell[::-1])
+            item = test_content_gen(0, *active_cell)
         wb.lbl_cell_content['text'] = str(item)
 
     def on_selected_cells_changed(self, event):
         wdg: SheetUI = event.widget
-        selected_cells = wdg.selected_cells
+        selected_cells = wdg.sht_ctx.selected_cells
         sel_x0, sel_y0, sel_x1, sel_y1 = selected_cells
         if (sel_x0, sel_y0) == (sel_x1, sel_y1):
             msg = self.sheetui.format_header(sel_x0, axis=1) + self.sheetui.format_header(sel_y0, axis=0)
@@ -220,6 +216,7 @@ class WbViewer(tk.Tk):
 
     def on_combobox_change(self, event):
         wdg = event.widget
+        self.sheetui: SheetUI
         active_sheet = self.active_sheet
         self.ws_ctxs[active_sheet] = self.sheetui.look
 
@@ -282,7 +279,6 @@ class WbViewer(tk.Tk):
                 assert menu_item == 'UnFreeze Panes'
                 sheetui.unfreeze_panes()
                 menu_master.entryconfig(indx, label='Freeze Panes')
-
 
     def file_menu(self, menu_master: tk.Menu, indx: int):
         menu, menu_item = menu_master.cget("title"), menu_master.entrycget(indx, "label")
