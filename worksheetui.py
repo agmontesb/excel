@@ -47,17 +47,13 @@ class SheetState(Flag):
     HEADINGS = auto()
 
 
-def test_content_gen(nquadrant: int, x: int, y: int) -> str:
+def test_content_gen(nquadrant: int, x0: int, y0: int, *args) -> str:
     """Generates the content for a cell based on its quadrant and cell coordinates."""
-    if nquadrant == 1:
-        return f"C{x}R{y}"
-    elif nquadrant == 2:
-        return f"Q2_C{x}R{y}"
-    elif nquadrant == 3:
-        return f"Q3_C{x}R{y}"
-    else:
-        return f"Q4_C{x}R{y}"
-
+    prefix = f'Q{nquadrant}_' if nquadrant != 1 else ''
+    if not args:
+        return f'{prefix}C{x0}R{y0}'
+    x1, y1 = args[:2]
+    return {(x, y): f'{prefix}C{x}R{y}' for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)}
 
 @runtime_checkable
 class SheetContext(Protocol):
@@ -72,6 +68,7 @@ class SheetContext(Protocol):
     
     active_cell: tuple[int, int] = viewport_q1[:2]
     selected_cells: tuple[int, int, int, int] = (*active_cell, *active_cell)
+    cells: dict[tuple[int, int], tuple[str, ...]] = {}
 
 
 class SheetContextData:
@@ -81,9 +78,11 @@ class SheetContextData:
         self.headings_hided: dict[str, int] = {}
 
         self.coords_vportq3: tuple[int, int] = (COL_CELLS_WIDTH, ROW_CELLS_HEIGHT)
-        self.coords_vportq1: tuple[int, int] = self.coords_vportq3        
-        bflag = False
-        if bflag:
+        self.coords_vportq1: tuple[int, int] = self.coords_vportq3
+        self.cells: dict[tuple[int, int], tuple[str, ...]] = {}
+       
+        bflag = logger.isEnabledFor(logging.DEBUG)
+        if not bflag:
             self.flags: SheetState = SheetState.GRIDLINES | SheetState.HEADINGS
             self.viewport_q3: tuple[int, int, int, int] = (1, 1, 1, 1)
             self.viewport_q1: tuple[int, int, int, int] = (1, 1, 1, 1)
@@ -400,10 +399,12 @@ class SheetLook:
 class SheetUI(tk.Canvas):
     def __init__(self, parent, cell_content_gen=None, **kwargs):
         super().__init__(parent, **kwargs)
-        self.set_sheet(redraw=False)
+        self.look = SheetLook()
+        # self.set_sheet_context(redraw=False)
         self.f_drag = False  # Flag to indicate if a mouse drag is in progress
         self.error_report = ""
-        self.cell_content = cell_content_gen or (lambda nquadrant, x, y: "")
+        self.cell_content = cell_content_gen or (lambda nquadrant, x, y, *args: "" if not args else {})
+
         self._format_header = None
 
         self.bind("<Configure>", self.redraw_sheet)
@@ -478,7 +479,7 @@ class SheetUI(tk.Canvas):
             dx = deltax
             viewport_x1, dmy = look.cell_containing_coords(winfo_width + dx, 0, viewport, coords_viewport)
             linf_x = look.cell_coordinates(viewport_x1, dmy, viewport, coords_viewport)[2]
-
+            linf_x = max(linf_x, coords_viewport[0])
             items = self.find_enclosed(linf_x - 1, clinf_y - 1, gx1 + 1, gy1 + 1)
             self.delete(*items)
 
@@ -533,7 +534,7 @@ class SheetUI(tk.Canvas):
             dy = deltay
             dmy, viewport_y1 = look.cell_containing_coords(0, winfo_height + dy, viewport, coords_viewport)
             linf_y = look.cell_coordinates(dmy, viewport_y1, viewport, coords_viewport)[3]
-
+            linf_y = max(linf_y, coords_viewport[1])
             items = self.find_enclosed(clinf_x - 1, linf_y - 1, gx1 + 1, gy1 + 1)
             self.delete(*items)
 
@@ -585,8 +586,9 @@ class SheetUI(tk.Canvas):
             self.tag_area(*area, tag="invalid_area")
         return ptx0 or pty0
 
-    def set_sheet(self, look: SheetLook | None=None, redraw: bool=True):
-        self.look = look or SheetLook()
+    def set_sheet_context(self, sht_ctx: SheetContext|None=None, redraw: bool=True):
+        sht_ctx = sht_ctx or SheetContextData()
+        self.look.sht_ctx = sht_ctx
         #flags
         self.f_drag = False  # Flag to indicate if a mouse drag is in progress
         if redraw:
@@ -752,47 +754,30 @@ class SheetUI(tk.Canvas):
             pass
 
         # Draw cells content
-        quadrants = [1, 2, 3, 4] if ctx.coords_vportq1 != ctx.coords_vportq3 else [1]
+        quadrants = self.active_quadrants()
         for item in self.find_withtag("cells_to_draw"):
             ix0, iy0, ix1, iy1 = map(int, self.coords(item))
             assert tuple(map(min, zip((ix1, iy1), self.look.cell_coordinates(MAX_COLS, MAX_ROWS)[2:]))) == look.area_coordinates(*look.area_cells(ix0, iy0, ix1, iy1))[2:]
+
+            item_cells = look.area_cells(ix0, iy0, ix1, iy1)
             for nquadrant in quadrants:
-                orig, coords_orig = look.quadrant_data(nquadrant)
-                ax0, ay0, ax1, ay1 = look.area_coordinates(*orig)
-                # Overlaping area
-                cx0, cy0 = max(ix0, ax0), max(iy0, ay0)
-                cx1, cy1 = min(ix1, ax1), min(iy1, ay1)
-                if not (cx1 > cx0 and cy1 > cy0):
+                clipping_rect, clipping_orig = self.look.quadrant_data(nquadrant)
+                area_sel = self.clip_rectangle(*item_cells, clipping_rect)
+                if area_sel is None:
                     continue
-                while cx0 < cx1:
-                    y0 = cy0
-                    while y0 < cy1:
-                        xcell, ycell = look.cell_containing_coords(cx0, y0, orig, coords_orig)
-                        x0, y0, x1, y1 = self.look.cell_coordinates(xcell, ycell, orig, coords_orig)
-                        cell_content = self.cell_content(nquadrant, xcell, ycell)
-                        self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
-                        y0 = y1
-                    cx0 = x1
+                cell_info = self.cell_content(nquadrant, *area_sel)
+                for (xcell, ycell), cell_content in cell_info.items():
+                    x0, y0, x1, y1 = self.look.cell_coordinates(xcell, ycell, clipping_rect, clipping_orig)
+                    self.draw_cell_content((x0, y0, x1, y1), cell_content, fill="black", tags="cell_content")
             self.itemconfig(item, tags="cells_drawn", state="hidden")
-            pass
-        # [self.tag_lower(tag) for tag in ("cols_drawn", "rows_drawn", "cells_drawn")]
+                
         if logger.isEnabledFor(logging.DEBUG):
             logging.debug(sorted(Counter([self.itemcget(item, 'tags') for item in self.find_all()]).items()))
         pass
-    
-    def show_ws_elements(self):
-        """Shows the elements as active cell, selected cells, freeze lines, rows/cols selected in the worksheet."""
-        ctx = self.look.sht_ctx
-        # Set the tag "selected" for the region in coords (40, CELL_HEIGHT, 40 + 5*CELL_WIDTH, CELL_HEIGHT + 5*CELL_HEIGHT) rectangle
-        def clip_rectangle(x0: int, y0: int, x1: int, y1: int, clipping_rgn: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
-            linf_x, linf_y, lsup_x, lsup_y = clipping_rgn
-            bflag1 = linf_x <= x0 <= lsup_x or linf_x <= x1 <= lsup_x
-            bflag2 = linf_y <= y0 <= lsup_y or linf_y <= y1 <= lsup_y
-            if bflag1 and bflag2:
-                x0, x1 = min(lsup_x, max(linf_x, x0)), max(linf_x, min(x1, lsup_x))
-                y0, y1 = min(lsup_y, max(linf_y, y0)), max(linf_y, min(y1, lsup_y))
-                return x0, y0, x1, y1
 
+    def active_quadrants(self):
+        "Entrega los quadrantes en que se divide la pantalla cuando se tienen 'freeze panes'"
+        ctx = self.look.sht_ctx
         quadrants = [1]
         if bflag1 := ctx.viewport_q3[0] != ctx.viewport_q3[1]:
             quadrants.append(4)
@@ -800,7 +785,26 @@ class SheetUI(tk.Canvas):
             quadrants.append(2)
         if bflag1 and bflag2:
             quadrants.append(3)
+        return quadrants
 
+    @staticmethod    
+    def clip_rectangle(x0: int, y0: int, x1: int, y1: int, clipping_rgn: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
+        linf_x, linf_y, lsup_x, lsup_y = clipping_rgn
+        bflag1 = linf_x <= x0 <= lsup_x or linf_x <= x1 <= lsup_x
+        bflag2 = linf_y <= y0 <= lsup_y or linf_y <= y1 <= lsup_y
+        if bflag1 and bflag2:
+            x0, x1 = min(lsup_x, max(linf_x, x0)), max(linf_x, min(x1, lsup_x))
+            y0, y1 = min(lsup_y, max(linf_y, y0)), max(linf_y, min(y1, lsup_y))
+            return x0, y0, x1, y1
+    
+    def show_ws_elements(self):
+        """Shows the elements as active cell, selected cells, freeze lines, rows/cols selected in the worksheet."""
+        ctx = self.look.sht_ctx
+        # Set the tag "selected" for the region in coords (40, CELL_HEIGHT, 40 + 5*CELL_WIDTH, CELL_HEIGHT + 5*CELL_HEIGHT) rectangle
+
+        clip_rectangle = self.clip_rectangle
+
+        quadrants = self.active_quadrants()
         self.delete("selected_cells")
         for nquadrant in quadrants:
             clipping_rect, _ = self.look.quadrant_data(nquadrant)

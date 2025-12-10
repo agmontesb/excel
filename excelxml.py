@@ -10,7 +10,7 @@ import collections
 import logging
 import re
 
-from worksheetui import SheetState
+from worksheetui import SheetState, SheetContextData, COL_CELLS_WIDTH, ROW_CELLS_HEIGHT, CELL_WIDTH, CELL_HEIGHT
 import mywidgets.Tools.uiStyle.MarkupRe as MarkupRe
 from mywidgets.Widgets.Custom import navigationbar
 from xlobjects import XlErrors
@@ -18,6 +18,8 @@ from xlpatterns import from_a1_tuple, offset_rng, interval_regex, regex_range
 from xlpatterns import (cell_address as wscell_address,
                         cell_pattern as wscell_pattern,
                         code_alpha as excel_col_to_int,
+                        tbl_address,
+                        from_r1c1_a1, 
                         formulaR1C1)
 
 
@@ -33,7 +35,8 @@ class WorkSheetXml:
 
     def __init__(self, ws_name: str):   #, fml_map: dict, val_map: dict):
         self.title = ws_name
-        self.cells = {}
+        self.coords_vportq3: tuple[int, int] = (COL_CELLS_WIDTH, ROW_CELLS_HEIGHT)
+        self.coords_vportq1: tuple[int, int] = self.coords_vportq3        
         pass
 
     def __getitem__(self, range_str: str): # -> dict[str, str] | 'WorkSheetXml.Cell' | None:
@@ -48,38 +51,47 @@ class WorkSheetXml:
         }
         return cells
     
-    def cell(self, row:int, column:int) -> 'WorkSheetXml.Cell':
-        col_str = ''
-        n = column
-        while n:
-            n, r = divmod(n - 1, 26)
-            col_str = chr(ord('A') + r) + col_str
-        adr = f'{col_str}{row}'
-        return self.cells.get(adr, WorkSheetXml.Cell(adr))
+    def cell(self, row:int, column:int, *args) -> 'WorkSheetXml.Cell':
+        adr1 = from_r1c1_a1(f'R{row}C{column}')
+        if not args:
+            return self.cells.get(adr1, WorkSheetXml.Cell(adr1))
+        adr2 = from_r1c1_a1(f'R{args[0]}C{args[1]}')
+        cell_rng = f'{adr1}:{adr2}'
+        rng_rgx = regex_range(cell_rng)
+        pattern = re.compile(rng_rgx)
+        answ = {key: value for key, value in self.cells.items() if pattern.fullmatch(key)}
+        return answ
 
 
 class WorkBookXml:
 
-    def __init__(self, fname, default_range=DEFAULT_RANGE):
-        loader = OXLLoader(fname)
-        self.zf = loader
+    def __init__(self, fname:str|None=None, default_range=DEFAULT_RANGE):
+        self.zf = None
         self.ws_fname = {}
         self._defined_names = {}
-        self._sheet_names = {}
+        self._sheet_names = {f'Sheet{n}': '' for n in (1, 2, 3,)}
         self.sheet_obs = {}
-        self.shared_strings = loader.shared_strings
         self.default_range = default_range
-        self.load_wb_data()
+        self.shared_strings = []
+        self.calcMode = 'auto'
+        self.refMode = 'R1C1'
+        ndx = 0
+        if fname:
+            ndx = self.load_wb_data(fname)
+        active_sheet = self.sheetnames[ndx]
+        self.select_sheet(active_sheet)
 
-    def load_wb_data(wb):
-        loader = wb.zf        
+    def load_wb_data(wb, fname:str) -> str:
+        wb.zf = loader = OXLLoader(fname)
+        wb.shared_strings = loader.shared_strings
         wb_data = loader.parse_workbook_xlm()
         active_tab = wb_data.pop('active_tab', 0)
         for key, value in wb_data.items():
             setattr(wb, key, value) 
-        active_sheet = wb.sheetnames[active_tab]
-        wb.active = wb[active_sheet]
-        pass
+        return active_tab
+
+    def select_sheet(wb, sheet_name: str) -> WorkSheetXml:
+        wb.active = wb[sheet_name]
 
     @property
     def sheetnames(self):
@@ -89,11 +101,12 @@ class WorkBookXml:
         assert ws_name in wb.sheetnames, "Not a valid Woksheet name"
         if ws_name not in wb.sheet_obs:
             ws = WorkSheetXml(ws_name)
-            rpath = wb._sheet_names[ws_name]
-
-            loader = wb.zf
-            ws_data = loader.parse_worksheet_xlm(rpath, isAbs=False)
-
+            try:
+                loader = wb.zf
+                rpath = wb._sheet_names[ws_name]
+                ws_data = loader.parse_worksheet_xlm(rpath, isAbs=False)
+            except Exception as e:
+                ws_data = vars(SheetContextData())
             for key, value in ws_data.items():
                 setattr(ws, key, value)
             wb.sheet_obs[ws_name] = ws 
@@ -159,8 +172,13 @@ class OXLLoader:
         # Named ranges
         wb_pattern = '(?#<definedName name=name *=rng>)'
         cpattern = MarkupRe.compile(wb_pattern)
+        fn = lambda coords: sum([from_a1_tuple(cell)[1:] for cell in coords.split(':')], tuple())
         try:
-            defined_names = {name: rng for name, rng in cpattern.findall(content)}
+            defined_names = {
+                name: (tpl[0], fn(tpl[1])) 
+                for name, rng in cpattern.findall(content)
+                if (tpl := tbl_address(rng.replace('$', '')))
+            }
             answ['_defined_names'] = defined_names
         except Exception as e:
             logger.debug(f'Error loading named ranges: {str(e)}')
@@ -243,7 +261,9 @@ class OXLLoader:
             min, max = int(min), int(max)
             # Suponiendo que customWidth es '1' siempre.
             headings_map = headings_hidden if hidden is not None else headings_dim
-            headings_map.update({f'C{n}': width for n in range(min, max + 1)})
+            # headings_map.update({f'C{n}': width for n in range(min, max + 1)})
+            # Esto es mientras se implementa el width a pixeles
+            headings_map.update({f'C{n}': CELL_WIDTH for n in range(min, max + 1)})
             # Por implementar: style, autoFit
 
         # 18.3.1.73 row (Row)
@@ -254,9 +274,15 @@ class OXLLoader:
             headings_map = headings_hidden if hidden is not None else headings_dim
             # Solo se almacena ht en headings_dim si customHeight es '1'
             if ht is not None:
-                headings_map[f'R{row}'] = ht
+                # headings_map[f'R{row}'] = ht
+                headings_map[f'R{row}'] = CELL_HEIGHT
             elif hidden is not None:
-                headings_hidden[f'R{row}'] = '0' # Acá se debe almacenar el valor de altura de fila por defecto
+                # headings_hidden[f'R{row}'] = '0' # Acá se debe almacenar el valor de altura de fila por defecto
+                headings_hidden[f'R{row}'] = CELL_HEIGHT # Acá se debe almacenar el valor de altura de fila por defecto
+
+        headings_dim.update({key: 0 for key in headings_hidden})
+        answ['headings_dim'] = headings_dim
+        answ['headings_hided'] = headings_hidden
 
         val_map, style_map = loader.get_values_styles(content, ws_range, allCells=True)
         fml_map, fmlr1c1_map = loader.get_formulas(content, ws_range, allCells=True)
@@ -377,7 +403,7 @@ class OXLLoader:
         return fmls, fmlsr1c1
 
 
-def load_workbook(filename):
+def load_workbook(filename: str|None=None) -> WorkBookXml:
     xml_book = WorkBookXml(filename)
     return xml_book
 
@@ -386,9 +412,13 @@ def main():
     fname = r'C:\Users\agmontesb\Documents\GitHub\excel\tests\files\excel_module_test.xlsx'
     test = 'interval_regex'  # 'WorkBookXml' | 'WorkSheetXml' | 'load_workbook'
 
-    test = 'OXLLoader'
+    test = 'EmptyWorkBook'
 
     match test:
+        case 'EmptyWorkBook':
+            wb = WorkBookXml()
+            sht1 = wb.select_sheet('Sheet1')
+            pass
         case 'OXLLoader':
             loader = OXLLoader(fname)
             wb_data = loader.parse_workbook_xlm()

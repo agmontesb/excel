@@ -5,6 +5,7 @@
         <var type="boolean" name="view_gridlines" value="1"/>
         <var type="boolean" name="fml_r1c1" value="1"/>
         <var type="string" name="wb_loader" value="excelxml"/>
+        <var type="string" name="wb_freeze" value="Freeze Panes"/>
         <frame side="top" fill="x">
             <button name="btn_xmlview" text="XML View" state="disabled" side="right" padx="5" pady="5"/>
             <combobox name="cb_sheet_selector" values="Sheet1 Sheet2 Sheet3" side="right" padx="5" pady="5"/>

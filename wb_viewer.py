@@ -9,23 +9,14 @@ import excelxml
 
 import mywidgets.userinterface as userinterface
 from mywidgets.Tools.mywinzip.file_menu import FileMenu
-from mywidgets.equations import equations_manager
+from mywidgets.equations import equations_manager as eqm
 from excelxml_viewer import ExcelXmlViewer
-from worksheetui import SheetState, SheetUI, test_content_gen, SheetLook
+from worksheetui import SheetState, SheetUI, test_content_gen
+from xlpatterns import from_a1_tuple, alpha_code
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-def alpha_code(id, nbase=26):
-    answ = []
-    while id:
-        res = id % nbase
-        id = id // nbase
-        if res == 0:
-            res = nbase
-            id -=1
-        answ.append(chr(ord('A') + res - 1))
-    return ''.join(answ[::-1])
 
 class WbViewer(tk.Tk):
 
@@ -39,58 +30,56 @@ class WbViewer(tk.Tk):
         self.bind_all('<<MENUCLICK>>', self.onMenuClick)
         self.bind_all('<<VAR_CHANGE>>', self.onVarChange)
         self.setGUI()
+        self.vars = eqm.state_equations # Variables registradas en el layout de la aplicación
 
         self.fmngr = fmngr = FileMenu(self)
-        fmngr.default_file_name = 'newZip.zip'
+        fmngr.default_file_name = 'new_workbook.xlsx'
         fmngr.default_path = 'C:/Users/agmontesb/Downloads/'
         fmngr.default_extension = '.xlsx'
         # fmngr.default_file_type = [('Excel Workbook', '*.xlsx'), ('Excel 97-2003 Workbook', '*.xls')]
         fmngr.default_file_type = ('Excel Workbook', '*.xlsx')
-        self.ws_ctxs = {}
         self.named_range = {}
-        self.active_sheet = self.cb_sheet_selector.get()
-        self._r1c1_flag = False
         if logger.isEnabledFor(logging.DEBUG):
-            self._r1c1_flag = True
             test_dir = r'C:\Users\agmontesb\Documents\GitHub\excel\tests\files'
             ldir = os.listdir(test_dir)
             [fmngr.recFile(os.path.join(test_dir, nfile)) for nfile in fnmatch.filter(ldir, '[!~$]*.xlsx') ]
 
-        self.wb = None
+        self.loadwb(None)
         self.geometry("600x400")
         pass
 
-    def content_gen(self, nquadrant, x, y):
-        if self.wb is None:
-            return test_content_gen(nquadrant, x, y)
-        sheet = self.wb[self.active_sheet]
-        return sheet.cell(row=y, column=x).value
+    def content_gen(self, nquadrant, x0, y0, *args):
+        '''
+        Esta función se utiliza para generar el contenido de las celdas que se muestran en el gui, 
+        por lo que se excluyen las celdas que se encuentran en "rows" o "cols" ocultas
+        '''
+        if logger.isEnabledFor(logging.DEBUG):
+            return test_content_gen(nquadrant, x0, y0, *args)
+        sheet = self.wb.active
+        if not args:
+            return sheet.cell(row=y0, column=x0).value
+        x1, y1 = args[:2]
+        cells = sheet.cell(y0, x0, y1, x1)
+        # Este filtro excluye las celdas ocultas a la vez que transforma el "adr" que 
+        # se encuentra en formato "A1" a la forma "tuple" que es como lo espera el "sheetui widget" 
+        keys = [
+            (cell, adr) for adr in cells 
+            if (cell := from_a1_tuple(adr)[1:]) and (
+                f'C{cell[0]}' not in sheet.headings_hided and f'R{cell[1]}' not in sheet.headings_hided
+            )
+        ]
+        return {tpl: str(cells[adr].value) for tpl, adr in keys}
 
-    @property
-    def r1c1_flag(self) -> bool:
-        return self._r1c1_flag
-    
-    @r1c1_flag.setter
-    def r1c1_flag(self, value: bool):
-        if self._r1c1_flag != value:
-            if not value:
-                self.sheetui.format_header = lambda index, axis: alpha_code(index) if axis == 1 else f"{index}"
-            else:
-                self.sheetui.format_header = None
-        self._r1c1_flag = value
-
-    def on_active_cell_changed(wb, event):
+    def on_active_cell_changed(self, event):
         wdg: SheetUI = event.widget
         active_cell = wdg.sht_ctx.active_cell[::-1]
-        if wb.wb:
-            cell = wb.wb[wb.active_sheet].cell(*active_cell)
-            try:
-                item = cell.formula
-            except AttributeError:
-                item = cell.value
-        else:
-            item = test_content_gen(0, *active_cell)
-        wb.lbl_cell_content['text'] = str(item)
+        cell = self.wb.active.cell(*active_cell)
+        key = 'formulaR1C1' if self.vars['fml_r1c1'].get() else 'formula'
+        try:
+            item = getattr(cell, key)
+        except AttributeError:
+            item = cell.value
+        self.lbl_cell_content['text'] = str(item or '')
 
     def on_selected_cells_changed(self, event):
         wdg: SheetUI = event.widget
@@ -114,7 +103,7 @@ class WbViewer(tk.Tk):
             setParentTo='master',
             registerWidget=self.register_widget,
         )
-        equations_manager.set_initial_widget_states()
+        eqm.set_initial_widget_states()
 
         try:
             cb_sheet_selector = self.cb_sheet_selector
@@ -169,7 +158,7 @@ class WbViewer(tk.Tk):
         widget = event.widget
         range_name = widget.get()
         active_sheet, coords = self.named_range[range_name]
-        if self.active_sheet != active_sheet:
+        if self.wb.active.title != active_sheet:
             self.cb_sheet_selector.set(active_sheet)
             self.cb_sheet_selector.event_generate("<<ComboboxSelected>>")
         self.sheetui.set_selected_cells(*coords)
@@ -181,13 +170,13 @@ class WbViewer(tk.Tk):
         new_value = widget.get()
 
         # Check for range format R1C1:R3C3
-        re_str = r'R(\d+)C(\d+)(?::R(\d+)C(\d+))*' if self.r1c1_flag else r'([A-Z]+)(\d+)(?::([A-Z]+)(\d+))*'
+        re_str = r'R(\d+)C(\d+)(?::R(\d+)C(\d+))*' if self.vars else r'([A-Z]+)(\d+)(?::([A-Z]+)(\d+))*'
         m = re.match(re_str, new_value.upper())
         if m:
             coords = m.groups()
             if ':' not in new_value:
                 coords = coords[:2]
-            if self.r1c1_flag:
+            if self.vars['fml_r1c1'].get():
                 # El método set_selected_cells espera col, row, col, row y m.groups() devuelve row, col, row, col
                 tlcorner, brcorner = coords[:2], coords[2:]
                 coords = (*tlcorner[::-1], *brcorner[::-1])
@@ -207,22 +196,31 @@ class WbViewer(tk.Tk):
             current_values.append(new_value)
             widget.config(values=sorted(current_values))
             # The new value is already displayed as it was typed by the user.
-            self.named_range[new_value] = (self.active_sheet, self.sheetui.selected_cells)
+            ws_name = self.cb_sheet_selector.get()
+            self.named_range[new_value] = (ws_name, self.sheetui.selected_cells)
             widget.set(new_value)
             self.sheetui.focus_set()
         else:
             self.cb_named_range.set(new_value)
             self.cb_named_range.event_generate("<<ComboboxSelected>>")
 
-    def on_combobox_change(self, event):
-        wdg = event.widget
+    def on_combobox_change(self, event=None, ws_name=None):
+        try:
+            wdg = event.widget
+            ws_name = wdg.get()
+        except AttributeError:
+            pass
+        assert ws_name is not None
         self.sheetui: SheetUI
-        active_sheet = self.active_sheet
-        self.ws_ctxs[active_sheet] = self.sheetui.look
-
-        self.active_sheet = ws_name = wdg.get()
-        look = self.ws_ctxs.get(ws_name, SheetLook())
-        self.sheetui.set_sheet(look)
+        try:
+            self.wb.select_sheet(ws_name)
+            self.sheetui.set_sheet_context(self.wb.active, redraw=True)
+            sheet = self.wb.active
+            mnu = self.nametowidget('.view')
+            lbl = 'UnFreeze Panes' if sheet.flags & SheetState.FREEZE else 'Freeze Panes'
+            self.vars['wb_freeze'].set(lbl)
+        except AttributeError:
+            pass
         self.sheetui.focus_set()
         pass
 
@@ -236,7 +234,6 @@ class WbViewer(tk.Tk):
             case 'view_gridlines':
                 self.sheetui.toggle_gridlines()
             case 'fml_r1c1':
-                self.r1c1_flag = value
                 self.sheetui.redraw_headings()
             case 'wb_loader':
                 if value == 'openpyxl':
@@ -254,8 +251,8 @@ class WbViewer(tk.Tk):
                 self.view_menu(menu_master, indx)
 
     def view_menu(self, menu_master: tk.Menu, indx: int):
-        logger.debug(f"View menu item selected: {menu_item}")
         menu_item: str = menu_master.entrycget(indx, "label")
+        logger.debug(f"View menu item selected: {menu_item}")
         sheetui: SheetUI = self.sheetui
         match menu_item:
             case x if x.startswith('Freeze'):
@@ -274,11 +271,11 @@ class WbViewer(tk.Tk):
                     sheetui.move_viewport(vx + dx, vy + dy)
                     sheetui.show_ws_elements()
                     indx -= 1 if menu_item == 'Top Row' else 2
-                menu_master.entryconfig(indx, label='UnFreeze Panes')
+                self.vars['wb_freeze'].set('UnFreeze Panes')
             case _: # 'UnFreeze Panes'
                 assert menu_item == 'UnFreeze Panes'
                 sheetui.unfreeze_panes()
-                menu_master.entryconfig(indx, label='Freeze Panes')
+                self.vars['wb_freeze'].set('Freeze Panes')
 
     def file_menu(self, menu_master: tk.Menu, indx: int):
         menu, menu_item = menu_master.cget("title"), menu_master.entrycget(indx, "label")
@@ -297,18 +294,21 @@ class WbViewer(tk.Tk):
             assert wbfilename.endswith(filename)
             self.loadwb(wbfilename)
     
-    def loadwb(self, filename):
-        load_workbook = getattr(self.wb_manager, 'load_workbook')
+    def loadwb(self, filename, wb_manager=None):
+        wb_manager = wb_manager or self.wb_manager
+        load_workbook = getattr(wb_manager, 'load_workbook')
         try:
             self.wb = wb = load_workbook(filename)
             sheet_names = wb.sheetnames
             self.cb_sheet_selector['values'] = sheet_names
 
-            self.active_sheet = active_sheet = wb.active.title
+            active_sheet = wb.active.title
             self.cb_sheet_selector.set(active_sheet)
-            self.ws_ctxs = {}
-            self.named_range = {}
-            self.sheetui.set_sheet()
+            self.named_range = wb._defined_names
+            self.cb_named_range['values'] = list(self.named_range.keys())
+
+            self.on_combobox_change(ws_name=active_sheet)
+            self.vars['fml_r1c1'].set(wb.refMode == 'R1C1')
 
         except Exception as e:
             tkMessageBox.showerror(title='Loading Error', message=str(e))
@@ -317,9 +317,9 @@ class WbViewer(tk.Tk):
             self.btn_xmlview['state'] = 'disabled'
             self.on_btn_xmlview_click(filename)
             raise Exception(str(e))
-        
-        self.fmngr.fileHistory = self.fmngr.recFile(filename)
-        self.fmngr.title(filename)
+        if filename:        
+            self.fmngr.fileHistory = self.fmngr.recFile(filename)
+            self.fmngr.title(filename)
         self.btn_xmlview['state'] = 'normal'
 
     def registerMenu(self, parent, selPane, menu_master, labels):
