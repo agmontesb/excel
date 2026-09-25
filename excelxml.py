@@ -1,14 +1,14 @@
 from html import unescape
 import os
-from typing import Any
+from typing import Any, Generator
 import zipfile
 import shutil
 import tempfile
-import itertools
 import pandas as pd
-import collections
+from collections import namedtuple
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from worksheetui import SheetState, SheetContextData, COL_CELLS_WIDTH, ROW_CELLS_HEIGHT, CELL_WIDTH, CELL_HEIGHT
 import mywidgets.Tools.uiStyle.MarkupRe as MarkupRe
@@ -29,9 +29,50 @@ logger = logging.getLogger(__name__)
 # cell_pattern = re.compile(r'(\$?[A-Z]+)(\$?[0-9]+)')
 
 DEFAULT_RANGE = 'A1:CV1000'   # equivalent to 'R1C1:R100C1000
+BLK_SIZE = 200_000 # Tamaño de bloque para la búsqueda de patrones en el XML, en caracteres. Se puede ajustar según el tamaño del archivo y la memoria disponible.
+
+
+class Cell(namedtuple('Cell', ['address', 'formula_', 'value', 'style', 'span'], defaults=(None, None, None, None))):
+    __slots__ = ()
+
+    @property
+    def formula(self):
+        fml = self.formula_ if self.formula_ is not None else str(self.value)
+        return fml
+
+    @property
+    def formulaR1C1(self):
+        # return formulaR1C1(self.formula_, self.address) if self.formula_ is not None else self.value
+        fmlr1c1 = formulaR1C1(self.formula, self.address)
+        return fmlr1c1
+    
+    def params(self) -> dict[str, Any]:
+        return {
+            'anchor': None,
+            'fill': 'black', 
+            'font': None,
+            'justify': 'left',
+            'stipple': '',
+        }
+
+    def __str__(self):
+        val = self.value
+
+        match val:
+            case str():
+                return val
+            case XlErrors():
+                return str(val)
+            case bool():
+                return str(val).upper()
+            case None:
+                return 'NONE'
+            case _:
+                return '{:,.2f}'.format(val)
+
 
 class WorkSheetXml:
-    Cell = collections.namedtuple('Cell', ['address', 'formula', 'formulaR1C1', 'value', 'style'], defaults=(None, None, None, None))
+    # Cell = collections.namedtuple('Cell', ['address', 'formula', 'formulaR1C1', 'value', 'style'], defaults=(None, None, None, None))
 
     def __init__(self, ws_name: str):   #, fml_map: dict, val_map: dict):
         self.title = ws_name
@@ -49,12 +90,13 @@ class WorkSheetXml:
             for adr, cell in self.cells.items()
             if pattern.match(adr)
         }
-        return cells
+        fnc = lambda x: '{0: >4s}{1: >4s}'.format(*wscell_address(x))
+        return {key: cells[key] for key in sorted(cells.keys(), key=lambda x: fnc(x))}
     
     def cell(self, row:int, column:int, *args) -> 'WorkSheetXml.Cell':
         adr1 = from_r1c1_a1(f'R{row}C{column}')
         if not args:
-            return self.cells.get(adr1, WorkSheetXml.Cell(adr1))
+            return self.cells.get(adr1, Cell(adr1))
         adr2 = from_r1c1_a1(f'R{args[0]}C{args[1]}')
         cell_rng = f'{adr1}:{adr2}'
         rng_rgx = regex_range(cell_rng)
@@ -62,10 +104,16 @@ class WorkSheetXml:
         answ = {key: value for key, value in self.cells.items() if pattern.fullmatch(key)}
         return answ
 
+    def iter_rows(self, min_row:int=None, min_col:int=None, max_row:int=None, 
+                  max_col:int=None, values_only:bool=False) -> Generator:
+        
+        pass
+
 
 class WorkBookXml:
 
     def __init__(self, fname:str|None=None, default_range=DEFAULT_RANGE):
+        self.fname = fname
         self.zf = None
         self.ws_fname = {}
         self._defined_names = {}
@@ -127,8 +175,7 @@ class OXLLoader:
         navigationbar.StrListObj.SEP = '/'
         self.path_obj = navigationbar.StrListObj(namelist, root)
 
-        content = self.load_xmlfile('xl/sharedStrings.xml', isAbs=False)
-        self.shared_strings = MarkupRe.findall('(?#<t *=shared_str>)', content)
+        self.shared_strings = self.parse_shared_strings()
         pass
 
     def load_xmlfile(self, path, isAbs=True):
@@ -140,19 +187,133 @@ class OXLLoader:
         return content
     
     @staticmethod
-    def extract_data(content, regex_pattern, seek_pattern=None):
+    def extract_data_old(content, regex_pattern, seek_pattern=None):
         it = MarkupRe.compile(regex_pattern)
         if seek_pattern:
             it._seeker = re.compile(seek_pattern)
         values = []
         for grp_d in it.finditer(content):
             parameters = getattr(grp_d, 'parameters', [])
-            items = [*parameters, *grp_d.groupdict().values()]
+            items = [*grp_d.span(), *parameters, *grp_d.groupdict().values()]
             values.append(items)
-        keys = [*it.get_seeker().groupindex.keys(), *it.groupindex.keys()]
+        keys = ['beg', 'end', *it.get_seeker().groupindex.keys(), *it.groupindex.keys()]
         df = pd.DataFrame(values, columns=keys)
         return df
+
+    @staticmethod
+    def extract_data(content, regex_pattern, seek_pattern=None):
+
+        def fn(comp_pattern: MarkupRe.ExtRegexObject, data:str, beg:int, end:int) -> pd.DataFrame:
+            print(f'starting {beg}:{end}')
+            values = []
+            for grp_d in comp_pattern.finditer(data, beg, end):
+                parameters = getattr(grp_d, 'parameters', [])
+                items = [*grp_d.span(), *parameters, *grp_d.groupdict().values()]
+                values.append(items)
+            keys = ['beg', 'end', *comp_pattern.get_seeker().groupindex.keys(), *comp_pattern.groupindex.keys()]
+            df = pd.DataFrame(values, columns=keys)
+            print(f'finished {beg}:{end}')
+            return df
+
+
+        comp_pat = MarkupRe.compile(regex_pattern)
+        if seek_pattern:
+            comp_pat._seeker = re.compile(seek_pattern)
+
+        # Se establecen las secciones de búsqueda para evitar que la búsqueda se realice en todo el contenido de una sola vez, 
+        # lo que podría ser ineficiente para archivos grandes. Se divide el contenido en bloques y se buscan coincidencias dentro de esos bloques.
+
+        tag_pattern = comp_pat.tag_pattern
+        slice_str = f'<{tag_pattern}\\s[^>]*[^>]*[/]*>'
+        slice_pat = MarkupRe.compile(slice_str)
+
+        blks = [0]
+        while blks[-1] < len(content):
+            pbeg = min(blks[-1] + BLK_SIZE, len(content))
+            m = slice_pat.search(content, pbeg)
+            if m:
+                blks.append(m.start())
+            else:
+                blks.append(len(content))
+        blks = list(zip(blks[:-1], blks[1:]))
+
+        with ThreadPoolExecutor() as executor:
+            # submit() schedules the function and returns a Future object immediately
+            futures = [executor.submit(fn, comp_pat, content, beg, end) for beg, end in blks]
+
+            # .result() blocks the main program until that specific thread finishes
+            results = [future.result() for future in futures]
+
+        df = pd.concat(results, ignore_index=True)
+        return df
+
+
+    def parse_shared_strings(loader) -> list[str]:
+        content = loader.load_xmlfile('xl/sharedStrings.xml', isAbs=False)
+        answ = MarkupRe.findall('(?#<t *=shared_str>)', content)
+        return answ
     
+    def parse_styles(loader) -> list[str]:
+        content = loader.load_xmlfile('xl/styles.xml', isAbs=False)
+
+        numFmts = {
+            int(key): unescape(value).split(';') 
+            for key, value in MarkupRe.findall('(?#<numFmts <numFmt (numFmtId) (formatCode)>>)', content)
+        }
+
+        fnc = lambda m: {
+            tpl[0]: tpl[1].strip('"') for x in (
+            m.group()[6:-7]
+            .replace(' val=', '=')
+            .replace(' theme=', '=')
+        )[1:-2].split('/><') if (tpl := x.split('='))
+        }
+
+
+        fonts = [
+            fnc(m)
+            for m in MarkupRe.finditer('(?#<fonts <font>>)', content)
+        ]
+
+        fnc = lambda m: { 
+            tpl[0]: int(tpl[1]) 
+            for x in m.group().strip('<xf />').split(' ')
+            if (tpl := x.replace('"', '').split('='))
+        }
+
+        cellStyleXfs = [fnc(m) for m in MarkupRe.finditer('(?#<cellStyleXfs <__TAG__>>)', content)]
+
+        cellXfs = [fnc(m) for m in MarkupRe.finditer('(?#<cellXfs <__TAG__>>)', content)]
+
+        # apply mapping
+        apply_map = {
+            'applyAlignment': 'aligment',
+            'applyBorder': 'borderId',
+            'applyFill': 'fillId',
+            'applyFont': 'fontId',
+            'applyNumberFormat': 'numFmtId',
+            'applyProtection': 'protection',
+        }
+
+        k = 9
+        xf_rec = {}
+        if (xfid := cellXfs[k].get('xfId', None)) is not None:
+            xf_rec.update(
+                {
+                    key: cellStyleXfs[xfid].get(key, 1) 
+                    for appkey, key in apply_map.items() 
+                    if cellStyleXfs[xfid].get(appkey, 1)
+                }
+            )
+        xf_rec.update(
+            {
+                key: cellXfs[k].get(key, 1)
+                for appkey, key in apply_map.items() 
+                if cellXfs[k].get(appkey, 1)
+            }
+        )
+        return cellXfs
+
     def parse_workbook_xlm(loader) -> int:
         content = loader.load_xmlfile('xl/workbook.xml', isAbs=False)
 
@@ -194,13 +355,13 @@ class OXLLoader:
         answ['refMode'] = calcMode or 'A1'
         return answ
 
-    def parse_worksheet_xlm(loader, rpath: str, isAbs: bool = False) -> dict[str, Any]:
+    def parse_worksheet_xlm(loader, rpath: str, isAbs:bool=False, ws_range:str=None) -> dict[str, Any]:
         content = loader.load_xmlfile(rpath, isAbs)
         answ = {}
 
         # dimension element: 18.3.1.35 dimension (Worksheet Dimensions)
         rgx_str = '(?#<dimension ref=dim>)'
-        ws_range = MarkupRe.findall(rgx_str, content)[0]
+        ws_range = ws_range or MarkupRe.findall(rgx_str, content)[0]
         answ['ws_range'] = ws_range
 
         # sheetView element: 18.3.1.86 sheetView (Sheet View)
@@ -284,124 +445,173 @@ class OXLLoader:
         answ['headings_dim'] = headings_dim
         answ['headings_hided'] = headings_hidden
 
-        val_map, style_map = loader.get_values_styles(content, ws_range, allCells=True)
-        fml_map, fmlr1c1_map = loader.get_formulas(content, ws_range, allCells=True)
+        cells_df = loader.get_cell_data(ws_range, content)
+        style_map = loader.get_cells_style(cells_df, ws_range, content)
+        val_map = loader.get_cells_value(cells_df, ws_range, content)
+        fml_map = loader.get_cells_formula(cells_df, ws_range, content, allCells=True)
 
         cells = {
-            adr: WorkSheetXml.Cell(
+            adr: Cell(
                 adr, 
-                fml_map.get(adr, value),
-                fmlr1c1_map.get(adr, value),
+                fml_map.get(adr, None),
                 value, 
-                style_map.get(adr, None)
+                style_map.get(adr, None),
+                cells_df.loc[adr, ['beg', 'end']].to_list()
             )
             for adr in set(fml_map.keys()).union(val_map.keys())
             if (value :=val_map.get(adr)) is not None
         }
         answ['cells'] = cells
         return answ
+
+    def get_cell_data(loader, ws_range: str, content: str, allCells=True) -> pd.DataFrame:
+        # Cell data types:
+        # value only:  '<c r="G12" s="242"><v>8706824</v></c>'
+        # formula only: '<c r="K12" s="105"><f>G12+H12-I12+J12</f><v>8706824</v></c>'
+        # No value: '<c r="AD11" s="235" t="str"><f>IF(OR(AA11="Error",AB11="Error",AC11="Error"),A11,"")</f><v/></c>'
+        # Value with attrs: '<c r="AE93" s="58" t="str"><f>AA93 &amp; " | " &amp; AB93</f><v xml:space="preserve">OK | ok | ok | </v></c>'
+        # shared_head: '<c r="H11" s="662"><f t="shared" ref="H11:K11" si="0">SUM(H12:H16)</f><v>0</v></c>'
+        # shared: '<c r="I11" s="662"><f t="shared" si="0"/><v>0</v></c>
+
+        range_regex = regex_range(ws_range)
+        val_regex = fr'<c r="(?P<adr>{range_regex})"(?: s="(?P<style>\w+)")*( t="(?P<type>\w+)")*>(?:(?:<f t="shared" si="\d+"/>)|(?:<f[^>]*>(?P<fml>.+?)</f>))*(?:(?:<v/>)|(?:<v[^>]*>(?P<val>.+?)</v>))</c>'
+        if not allCells:
+            val_regex = f'(?#<c r="{range_regex}"=adr __NCHILDREN__="2" t=_t s=_s v.*=val>)'
+        cpat = re.compile(val_regex)
+        data = [(*m.span(), *m.groupdict().values()) for m in cpat.finditer(content)]
+        try:
+            df = (
+                pd.DataFrame(data, columns=['beg', 'end', 'adr', 'style', 'vtype', 'fml', 'val'])
+                .set_index('adr')
+            )
+        except Exception as e:
+            msg = f'Error loading values: {str(e)} {val_regex}'
+            logger.debug(msg)
+            raise Exception(msg)
+        return df
     
-    def get_values_styles(loader, content, ws_range: str, allCells=True):
+
+    def get_cell_data_old(loader, ws_range: str, content: str, allCells=True) -> pd.DataFrame:
         range_regex = regex_range(ws_range)
         seek_str = f'<c\\s[^>]*r="{range_regex}"[^>]*[/]*>'
         val_regex = f'(?#<c r="{range_regex}"=adr t=_t s=_s v.*=val>)'
         if not allCells:
             val_regex = f'(?#<c r="{range_regex}"=adr __NCHILDREN__="2" t=_t s=_s v.*=val>)'
-        shared = loader.shared_strings
         try:
             df = (
                 loader.extract_data(content, val_regex, seek_str)
                 .set_index('adr')
             )
-
-            mask = df.s.notna()
-            styles = df[mask].s.to_dict()
-            
-            # values = df.set_index('adr').val.to_dict()
-            # cell_type = df.set_index('adr').t.to_dict()
-            # cell_style = df.set_index('adr').s.to_dict()
-
-
-            # ECMA-376 18.18.11
-            # t = s (Shared String): Cell containing a shared string.
-            # [values.__setitem__(key, shared[int(value)]) for key, value in cell_type.items() if value.isnumeric()]
-            mask = df.t == 's'
-            shrd = df.loc[mask, 'val'].astype(int).map(lambda x: shared[x]).to_dict()
-
-            # t = str (String): Cell containing a formula string.
-            # t = inlineStr (Inline String): Cell containing an inline string.
-            # mask = (df.t == 'str') | (df.t == 'inlineStr') 
-            # df.loc[mask, 'val'] = df.loc[mask, 'val'].map(lambda x: x) # No se hace nada, ya que el valor ya está como cadena
-            
-            # t = e (Error): Cell containing an error.
-            mask = df.t == 'e'
-            errs = df.loc[mask, 'val'].map(lambda x: XlErrors(x)).to_dict()
-
-            # t = b (Boolean): Cell containing a boolean.
-            mask = df.t == 'b'
-            bools = df.loc[mask, 'val'].astype(int).map(lambda x: x != 0).to_dict()
-
-            # t = n (Number)
-            mask = (df.t == 'n') | (df.t.isna())
-            nums = {key: eval(val) for key, val in df.loc[mask, 'val'].to_dict().items()}
-
-            values = {**nums, **bools, **errs, **shrd}
-
         except Exception as e:
             msg = f'Error loading values: {str(e)} {val_regex}'
             logger.debug(msg)
             raise Exception(msg)
-        return values, styles
+        return df
 
-    def get_formulas(loader, content, ws_range, allCells=True):
+    def get_cells_style(loader, cell_df: pd.DataFrame, ws_range:str, content:str=None, allCells=True) -> dict[str, str]:
         range_regex = regex_range(ws_range)
-        seek_str = f'<c\\s[^>]*r="{range_regex}"[^>]*[/]*>'
-        fml_regex = f'(?#<c r="{range_regex}"=adr f.ref=_adr f.*=".+?"=fml>)'
+        style_rgx = fr'<c r="(?P<adr>{range_regex})" s="(?P<style>\w+)"/>'
+        cpat = re.compile(style_rgx)
         try:
-            df = loader.extract_data(content, fml_regex, seek_str)
-            fml_raw = (
-                df
-                .assign(fml=lambda db: db.fml.map(unescape))
-                .set_index('adr')
-                .fml.to_dict()
-                .items()
-            )
+            pairs = cpat.findall(content)
         except Exception as e:
-            msg = f'Error loading values: {fml_regex}'
+            msg = f'Error loading values: {str(e)} {style_rgx}'
             logger.debug(msg)
             raise Exception(msg)
+
+        style_map = cell_df['style'].to_dict()
+        style_map.update({key: value for key, value in pairs})
+        return style_map
+
+    def get_cells_value(loader, cell_df: pd.DataFrame, ws_range:str, content:str=None, allCells=True) -> dict[str, str]:
+        shared = loader.shared_strings
+
+        # values = df.set_index('adr').val.to_dict()
+        # cell_type = df.set_index('adr').t.to_dict()
+        # cell_style = df.set_index('adr').s.to_dict()
+
+
+        # ECMA-376 18.18.11
+        # t = s (Shared String): Cell containing a shared string.
+        # [values.__setitem__(key, shared[int(value)]) for key, value in cell_type.items() if value.isnumeric()]
+        mask = cell_df.vtype == 's'
+        shrd = cell_df.loc[mask, 'val'].astype(int).map(lambda x: shared[x]).to_dict()
+
+        # t = str (String): Cell containing a formula string.
+        # t = inlineStr (Inline String): Cell containing an inline string.
+        # mask = (df.t == 'str') | (df.t == 'inlineStr') 
+        # df.loc[mask, 'val'] = df.loc[mask, 'val'].map(lambda x: x) # No se hace nada, ya que el valor ya está como cadena
         
+        # t = e (Error): Cell containing an error.
+        mask = cell_df.vtype == 'e'
+        errs = cell_df.loc[mask, 'val'].map(lambda x: XlErrors(x)).to_dict()
 
-        if allCells:
-            pairs = []
-            for adr, fml in fml_raw:
-                if ':' in adr:
-                    cell1, cell2 = adr.split(':')
-                    (linfy, linfx), (lsupy, lsupx) = map(
-                            lambda x: (int(x[0]), excel_col_to_int(x[1])),
-                            map(wscell_address, (cell1, cell2))
-                    )
-                    offsets = [
-                        (col, row)
-                        for col in range(0, lsupx - linfx + 1)
-                        for row in range(0, lsupy - linfy + 1)
-                    ]
-                    fmls = [
-                        (
-                            offset_rng(cell1, col_offset, row_offset),
-                            wscell_pattern.sub(lambda m: offset_rng(m.group(), col_offset, row_offset), fml)
-                        )
-                        for col_offset, row_offset in offsets
-                    ]
-                    pairs.extend(fmls)
-                else:
-                    pairs.append((adr, fml))
-        else:
-            pairs = fml_raw
-        fmls = {key: '=' + value.lstrip('+') for key, value in pairs}
-        fmlsr1c1 = {key: formulaR1C1(value, key) for key, value in fmls.items()}
-        return fmls, fmlsr1c1
+        # t = b (Boolean): Cell containing a boolean.
+        mask = cell_df.vtype == 'b'
+        bools = cell_df.loc[mask, 'val'].astype(int).map(lambda x: x != 0).to_dict()
 
+        # t = n (Number)
+        mask = (cell_df.vtype == 'n') | (cell_df.vtype.isna())
+        nums = {key: eval(val) for key, val in cell_df.loc[mask, 'val'].to_dict().items()}
+
+        values = {**nums, **bools, **errs, **shrd}
+        return values
+
+    def get_cells_formula(loader, cell_df: pd.DataFrame, ws_range:str, content:str=None, allCells=True) -> dict[str, str]:
+        cell1, cell2 = ws_range.split(':')
+        (min_y, min_x), (max_y, max_x) = map(
+                lambda x: (int(x[0]), excel_col_to_int(x[1])),
+                map(wscell_address, (cell1, cell2))
+        )
+
+        fml_rgx = fr'<f t="shared" ref="(?P<adr>.+?)" si="\d+">(?P<fml>.+?)</f>'
+        cpat = re.compile(fml_rgx)
+        try:
+            range_fmls = cpat.findall(content)
+        except Exception as e:
+            msg = f'Error loading values: {str(e)} {fml_rgx}'
+            logger.debug(msg)
+            raise Exception(msg)
+
+        mask = cell_df.fml.notna()
+        fml_map = (
+            cell_df[mask]
+            .fml
+            .map(unescape)
+            .to_dict()
+        )
+        pairs = []
+        for (adr, fml) in range_fmls:
+            fml = unescape(fml)
+            cell1, cell2 = f'{adr}:{adr}'.split(':', 2)[:2]
+            (linfy, linfx), (lsupy, lsupx) = map(
+                    lambda x: (int(x[0]), excel_col_to_int(x[1])),
+                    map(wscell_address, (cell1, cell2))
+            )
+
+            bflag = lsupy < min_y or max_y < linfy or lsupx < min_x or max_x < linfx
+            if bflag:
+                continue
+
+            origen_x, origen_y = linfx, linfy
+            linfy, linfx = max(linfy, min_y), max(linfx, min_x)
+            lsupy, lsupx = min(lsupy, max_y), min(lsupx, max_x)
+            offsets = [
+                (col, row)
+                for col in range(linfx - origen_x, lsupx - origen_x + 1)
+                for row in range(linfy - origen_y, lsupy - origen_y + 1)
+            ]
+            fmls = [
+                (
+                    offset_rng(cell1, col_offset, row_offset),
+                    wscell_pattern.sub(lambda m: offset_rng(m.group(), col_offset, row_offset), fml)
+                )
+                for col_offset, row_offset in offsets
+            ]
+            pairs.extend(fmls)
+        fml_map.update(pairs) 
+        return fml_map
+    
 
 def load_workbook(filename: str|None=None) -> WorkBookXml:
     xml_book = WorkBookXml(filename)
@@ -412,17 +622,61 @@ def main():
     fname = r'C:\Users\agmontesb\Documents\GitHub\excel\tests\files\excel_module_test.xlsx'
     test = 'interval_regex'  # 'WorkBookXml' | 'WorkSheetXml' | 'load_workbook'
 
-    test = 'EmptyWorkBook'
+    test = 'OXLLoader'
 
     match test:
+        case 'cell_display':
+            import tkinter as tk
+            app = tk.Tk()
+            canvas = tk.Canvas(app, width=800, height=600, bg='white')
+            canvas.pack()
+
+            cell1 = Cell('A1', None, 1234.5678, None)
+            cell2 = Cell('B2', None, 'Hello, World!', None)
+            cell3 = Cell('C3', None, XlErrors.DIV_ZERO_ERROR, None)
+            cell4 = Cell('D4', None, True, None)
+            cell5 = Cell('E5', None, None, None)
+            cells = [cell1, cell2, cell3, cell4, cell5]
+
+            for k, cell in enumerate(cells):
+                kwargs = cell.params()
+                kwargs['text'] = str(cell)
+                kwargs['width'] = 200
+                kwargs['anchor'] = 'sw' if isinstance(cell.value, (int, float)) else 'ne'
+                kwargs['font'] = ('Arial', 16)
+                kwargs['fill'] = 'blue' if isinstance(cell.value, str) else 'red' if isinstance(cell.value, XlErrors) else 'green' if isinstance(cell.value, bool) else 'black'
+
+                canvas.create_text(
+                    100, 
+                    50 * (k + 1), 
+                    **kwargs,
+                    # text=f'Cell {cell.address}: {str(cell)}', 
+                    # anchor='w', 
+                    # font=('Arial', 16)
+                )
+                         
+
+            app.mainloop()
         case 'EmptyWorkBook':
             wb = WorkBookXml()
             sht1 = wb.select_sheet('Sheet1')
             pass
         case 'OXLLoader':
             loader = OXLLoader(fname)
+            cellXfs = loader.parse_styles()
             wb_data = loader.parse_workbook_xlm()
             tabId = wb_data['active_tab'] + 1
+
+            content = 1000 * loader.load_xmlfile(f'xl/worksheets/sheet{tabId}.xml', isAbs=False)
+
+            range_regex = regex_range('A1:Z100')
+            seek_str = f'<c\\s[^>]*r="{range_regex}"[^>]*[/]*>'
+            val_regex = f'(?#<c r="{range_regex}"=adr t=_t s=_s v.*=val>)'
+
+            df_old = loader.extract_data_old(content, val_regex, seek_str)
+            df_new = loader.extract_data(content, val_regex, seek_str)
+
+
             ws_data = loader.parse_worksheet_xlm(f'xl/worksheets/sheet{tabId}.xml', isAbs=False)
             pass
 

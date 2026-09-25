@@ -155,6 +155,14 @@ class EmptyCell:
     def __rtruediv__(self, other):
         return self.__truediv__(other)
 
+    def __eq__(self, value):
+        if (value is None or value == 0) or isinstance(value, EmptyCell):
+            return True
+        return False
+
+    def __bool__(self):
+        return False
+
     def __str__(self):
         return ""
     

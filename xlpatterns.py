@@ -60,25 +60,26 @@ def offset_rng(cells: str | list[str], col_offset: int = 0, row_offset: int = 0,
     disc_sht = [None, tbl] if tbl else [None, ]
     predicate = lambda x: True
     # Cuando se eliminen celdas, se debe asegurar que el offset no sobrepase los límites de la tabla
-    rmin, cmin = 1, ord('A')
+    # rmin, cmin = 1, ord('A')
+    rmin, cmin = 1, 1
     if disc_cell:
         sht, disc_cell = tbl_address(disc_cell)
         row, col = cell_address(disc_cell)
         rmin = int(row)
-        cmin = ord(col)
+        cmin = code_alpha(col)
         if sht not in disc_sht:
             disc_sht = [sht]
         if col_offset == 0 and row_offset:
             predicate = lambda x: int(cell_address(x)[0]) >= int(cell_address(disc_cell)[0])
         if col_offset and row_offset == 0:
-            predicate = lambda x: ord(cell_address(x)[1]) >= ord(cell_address(disc_cell)[1])
+            predicate = lambda x: code_alpha(cell_address(x)[1]) >= code_alpha(cell_address(disc_cell)[1])
         else:
             predicate = lambda x: '{0: >4s}{1}'.format(*cell_address(x)) >= '{0: >4s}{1}'.format(
                 *cell_address(disc_cell))
         if col_offset == 0 and row_offset:
             predicate = lambda x: int(cell_address(x)[0]) >= int(cell_address(disc_cell)[0])
         if col_offset and row_offset == 0:
-            predicate = lambda x: ord(cell_address(x)[1]) >= ord(cell_address(disc_cell)[1])
+            predicate = lambda x: code_alpha(cell_address(x)[1]) >= code_alpha(cell_address(disc_cell)[1])
         else:
             predicate = lambda x: '{0: >4s}{1}'.format(*cell_address(x)) >= '{0: >4s}{1}'.format(
                 *cell_address(disc_cell))
@@ -103,7 +104,8 @@ def offset_rng(cells: str | list[str], col_offset: int = 0, row_offset: int = 0,
         db.loc[mask, 'row'] = db.loc[mask, 'row'].apply(fnc)
 
         mask = ~db.col.str.contains('$', regex=False)
-        fnc = lambda x: chr(max(cmin, ord(x) + col_offset))
+        # fnc = lambda x: chr(max(cmin, ord(x) + col_offset))
+        fnc = lambda x: alpha_code(max(cmin, code_alpha(x) + col_offset))
         db.loc[mask, 'col'] = db.loc[mask, 'col'].apply(fnc)
 
         db['cell'] = db.col + db.row
@@ -287,6 +289,8 @@ def formulaR1C1(formulaA1: str, refA1: str) -> list[str]:
 
 
 def main():
+    cell1 = 'AA11'
+    offset_rng(cell1, 0, 0)
     pass
 
 if __name__ == '__main__':

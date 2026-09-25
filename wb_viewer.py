@@ -4,6 +4,7 @@ import logging
 import re
 import os
 import fnmatch
+from typing import Literal
 import openpyxl
 import excelxml
 
@@ -48,12 +49,17 @@ class WbViewer(tk.Tk):
         self.geometry("600x400")
         pass
 
+    def format_header(self, n: int, axis: Literal[0, 1]) -> str:
+        if self.vars['fml_r1c1'].get():
+            return f"{'RC'[axis]}{n}"
+        return alpha_code(n) if axis == 1 else str(n)
+
     def content_gen(self, nquadrant, x0, y0, *args):
         '''
         Esta función se utiliza para generar el contenido de las celdas que se muestran en el gui, 
         por lo que se excluyen las celdas que se encuentran en "rows" o "cols" ocultas
         '''
-        if logger.isEnabledFor(logging.DEBUG):
+        if self.wb.fname is None and logger.isEnabledFor(logging.DEBUG):
             return test_content_gen(nquadrant, x0, y0, *args)
         sheet = self.wb.active
         if not args:
@@ -75,10 +81,7 @@ class WbViewer(tk.Tk):
         active_cell = wdg.sht_ctx.active_cell[::-1]
         cell = self.wb.active.cell(*active_cell)
         key = 'formulaR1C1' if self.vars['fml_r1c1'].get() else 'formula'
-        try:
-            item = getattr(cell, key)
-        except AttributeError:
-            item = cell.value
+        item = getattr(cell, key) if self.wb.fname else 'Q{}_R{}C{}'.format(wdg.cell_quadrant(*active_cell, isCoord=False), *active_cell)
         self.lbl_cell_content['text'] = str(item or '')
 
     def on_selected_cells_changed(self, event):
@@ -124,8 +127,8 @@ class WbViewer(tk.Tk):
         try:
             sheetui:SheetUI = self.sheetui
             sheetui.focus_set()
-            if logger.isEnabledFor(logging.DEBUG):
-                sheetui.cell_content = self.content_gen
+            sheetui.cell_content = self.content_gen
+            sheetui.format_header = self.format_header
         except AttributeError:
             pass
 
@@ -312,11 +315,10 @@ class WbViewer(tk.Tk):
 
         except Exception as e:
             tkMessageBox.showerror(title='Loading Error', message=str(e))
-            # self.wb = None
-            # self.title = ''
             self.btn_xmlview['state'] = 'disabled'
             self.on_btn_xmlview_click(filename)
             raise Exception(str(e))
+        
         if filename:        
             self.fmngr.fileHistory = self.fmngr.recFile(filename)
             self.fmngr.title(filename)

@@ -433,7 +433,7 @@ class SheetUI(tk.Canvas):
         return self._format_header or (lambda index, axis: f"{'RC'[axis]}{index}")
     
     @format_header.setter
-    def format_header(self, fnc: Callable[[int, Literal['row', 'col']], str]):
+    def format_header(self, fnc: Callable[[int, Literal[0, 1]], str]):
         self._format_header = fnc
         try:
             width, height = self.look.efective_width(), self.look.efective_height()

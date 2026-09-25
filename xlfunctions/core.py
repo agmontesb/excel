@@ -8,7 +8,7 @@ from datetime import datetime
 from datetime import date as pydate
 
 
-__all__ = ['sum', 'if_', 'sumif', 'sumifs']
+__all__ = ['sum', 'if_', 'sumif', 'sumifs', 'and_', 'or_']
 
 func_dict = {}
 
@@ -92,3 +92,11 @@ def sumifs(sum_range, criteria_range1, criteria1, *criteria_pairs):
         sum_range = pd.Series(sum_range).where(mask)
     answer = sum_range.sum()
     return answer
+
+@register_function('math')
+def and_(*args):
+    return all(args)
+
+@register_function('math')
+def or_(*args):
+    return any(args)

@@ -14,7 +14,9 @@ for k in range(1, 13):
     month_map[month.replace('.', '')] = nmonth
     month_map[fmonth] = nmonth
 
-def serial_to_date(ndate):
+def serial_to_date(serial):
+    ndate = int(serial)
+    ntime = serial - ndate
     nyear = min(ndate//365 + 1900, 9999)
     while True:
         res = ndate - datevalue(f'{nyear-1}/12/31')
@@ -29,8 +31,15 @@ def serial_to_date(ndate):
             res -= ndays
         else:
             nday =  res
-            break  
-    return pydate(nyear, nmonth, nday)
+            break
+    nh = int(24 * ntime)
+    ntime = 24 * ntime - nh
+    nm = int(60 * ntime)
+    ntime = 60 * ntime - nm
+    ns = int(60 * ntime)
+    ntime = 60 * ntime - ns
+    nmicro = int(1000000 * ntime)
+    return datetime(nyear, nmonth, nday, nh, nm, ns, nmicro)
 
 
 

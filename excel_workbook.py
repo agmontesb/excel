@@ -20,7 +20,7 @@ token_specification = [
     ('STRING', r'".*?"'),  # string
     ('ASSIGN', r'\='),  # Assignment operator
     ('SOP', r'^|&|<>'),  # Special operators
-    ('OP', r'[+\-*/]'),  # Arithmetic operators
+    ('OP', r'[+\-*/]|<=|>=|<|>'),  # Arithmetic operators
     ('COMMA', r','),  # Line endings
     ('ANCHOR', r'\:'),  # Line endings
     ('OPENP', r'\('),  # Line endings
@@ -87,9 +87,10 @@ def pythonize_fml(fml: str, table_name: str, axis: None|Literal[0,1]=None, mask=
         # print(f'{kind=}: {token_chr=}')
         match kind:
             case 'FUNCTION':
-                fnc_name = token_chr if token_chr != 'IF' else 'IF_'
+                fnc_name = token_chr
+                suffix = '_' if fnc_name in ('IF', 'AND', 'OR') else ''
                 fnc_stack.append(fnc_name)
-                pyfml += f'xlf.{fnc_name.lower()}'
+                pyfml += f'xlf.{(fnc_name + suffix).lower()}'
             case 'ASSIGN':
                 if pyfml.count('=') > 0 and pyfml[-1] not in '<>':
                     pyfml += '='
@@ -123,6 +124,7 @@ def pythonize_fml(fml: str, table_name: str, axis: None|Literal[0,1]=None, mask=
                 lst_id += f'{prefix}{suffix}'
                 if ':' in lst_id or nxt_char != ':':
                     py_term = excel_to_pandas_slice(lst_id, axis, table_name, mask=mask, withValues='=' in pyfml)
+                    # py_term = excel_to_pandas_slice(lst_id, axis, table_name, mask=mask, withValues=True)
                     pyfml += py_term
                     lst_id = ''
                     pass
@@ -187,6 +189,46 @@ def shrink_range(linf, lsup, changes):
         answ.append(x)
 
     return answ[-2:]
+
+
+def cells_in_range(ref_range: str, excel_slice: tuple[str, ...] | str) -> list[str]:
+    parent_title, ref_range = tbl_address(ref_range)
+    (rmin, cmin),  (rmax, cmax) = map( cell_address, ref_range.split(':'))
+    rmin, rmax = int(rmin), int(rmax)
+
+    if isinstance(excel_slice, str):
+        excel_slice = (excel_slice, )
+    cell_rgn = set()
+    for slice in excel_slice:
+        sheet, slice = tbl_address(slice)
+        prefix = '' if sheet in (None, parent_title) else f'\'{sheet}\'!'
+        slice = slice.upper().replace('$', '')
+        linf, lsup = f'{slice}:{slice}'.split(':', 2)[:2]
+        if (linf + lsup).isnumeric():
+            if not prefix and (rmin <= int(linf) <= rmax) and (rmin <= int(lsup) <= rmax):
+                linf = f'{cmin}{linf}'
+                lsup = f'{cmax}{lsup}'
+            else: 
+                continue
+        if (linf + lsup).isalpha():
+            if not prefix and (cmin <= linf <= cmax) and (cmin <= lsup <= cmax):
+                linf = f'{linf}{rmin}'
+                lsup = f'{lsup}{rmax}'
+            else:    
+                continue
+        linf_cell = cell_address(linf)
+        lsup_cell = cell_address(lsup)
+        fnc = lambda x: sum((ord(c) - ord('A') + 1) * (26 ** i) for i, c in enumerate(reversed(x)))
+        linf_cell, lsup_cell = map(lambda x: (int(x[0]), int(fnc(x[1]))), (linf_cell, lsup_cell))
+        cell_rgn.update(
+            [
+                f'{prefix}{col}{row}' for row, col in itertools.product(
+                [x for x in range(linf_cell[0], lsup_cell[0] + 1)],
+                [alpha_code(x) for x in range(linf_cell[1], lsup_cell[1] + 1)])
+            ]
+        )
+    cell_rgn = sorted(cell_rgn, key=lambda x: '{0: >4s}{1: >4s}'.format(*cell_address(x)))
+    return cell_rgn
 
 
 class ExcelObject(ABC):
@@ -397,7 +439,6 @@ class ExcelWorksheet(ExcelCollection):
                 if not wb.links[err_code]:
                     wb.links.pop(err_code)
                     tbl.parent._param_map.pop(err_cell)
-
 
     def propagate_error(self, xl_error: XlErrors, codes: list[str] | None = None, reg_value=None):
         assert reg_value is None or not isinstance(reg_value, XlErrors), 'reg_value must be None or not a XlErrors'
@@ -636,7 +677,6 @@ class ExcelWorksheet(ExcelCollection):
                 tbl.recalculate(recalc=True)
 
         pass
-
 
     @property
     def data_rng(self):
@@ -1071,7 +1111,6 @@ class ExcelTable(ExcelObject):
 
         tbl.changed = list(set(tbl.changed) - set(df.loc[lnks].code[mask]))
 
-
     def clear_cells(tbl, to_clear: list[str], data=None):
         df = tbl.data if data is None else data
         # Se eliminan del campo "dependent" en las celdas aguas abajo 
@@ -1090,7 +1129,6 @@ class ExcelTable(ExcelObject):
         # Se convierten las cells de fml a values:
         df.loc[to_clear, ['fml', 'res_order', 'ftype']] = ['', 0, '#']
         return df
-
 
     def add_empty_cells(tbl, to_init: list[str], data=None):
         def is_cell_in_fml(cell, fml):
@@ -1276,7 +1314,7 @@ class ExcelTable(ExcelObject):
             df.loc[independents, 'dependents'] = (
                 df.loc[independents]
                 .dependents
-                .apply(lambda x: set.difference_update(to_convert_coded))
+                .apply(lambda x: x.difference_update(to_convert_coded))
             )
             # Se actualiza el campo "res_order" de las celdas aguas arriba de las celdas a convertir
 
@@ -1297,9 +1335,18 @@ class ExcelTable(ExcelObject):
         self.recalculate(recalc)
         pass
 
-    def get_cells_to_calc(tbl, changed, data=None):
+    def get_cells_to_calc(tbl, codes, data=None, isCoded=True):
         ws = tbl.parent
         to_process = set()
+        changed = codes
+        data = data or tbl.data
+        if not isCoded:
+            changed = (
+                data
+                .loc[changed]
+                .code
+                .to_list()
+            )
         params = set(changed) & set(ws.parameter_code(x) for x in ws.parameters())
         changed = [code.replace(f"'{ws.id}'!", '') for code in set(changed) - params]
         changed.extend(params)
@@ -1311,6 +1358,9 @@ class ExcelTable(ExcelObject):
                 break
             f_changed = list(set(changed) - to_process)
             to_process.update(f_changed)
+        if not isCoded:
+            mask = data["code"].isin(to_process)
+            to_process = data.loc[mask].index.tolist()
         return sorted(to_process, key=lambda x: '{0: >4s}{1}'.format(*cell_address(x)))
 
     def ordered_formulas(self, order, feval=False):
@@ -1433,7 +1483,7 @@ class ExcelTable(ExcelObject):
                 for row in sorted(rmap.keys(), key=lambda x: len(rmap[x])):
                     columns = rmap.pop(row)
                     while columns:
-                        frst_col, *columns = sorted(columns)
+                        frst_col, *columns = sorted(columns, key=lambda x:(len(x), x))
                         test_fml = rgn_fmls(frst_col, row)
                         mask = [
                             col
@@ -1662,42 +1712,8 @@ class ExcelTable(ExcelObject):
         return df
 
     def _cell_rgn(self, excel_slice: tuple[str, ...] | str) -> list[str]:
-        (rmin, cmin),  (rmax, cmax) = map( cell_address, self.data_rng.split(':'))
-        rmin, rmax = int(rmin), int(rmax)
-
-        if isinstance(excel_slice, str):
-            excel_slice = (excel_slice, )
-        cell_rgn = set()
-        for slice in excel_slice:
-            sheet, slice = tbl_address(slice)
-            prefix = '' if sheet in (None, self.parent.title) else f'\'{sheet}\'!'
-            slice = slice.upper().replace('$', '')
-            linf, lsup = f'{slice}:{slice}'.split(':', 2)[:2]
-            if (linf + lsup).isnumeric():
-                if not prefix and (rmin <= int(linf) <= rmax) and (rmin <= int(lsup) <= rmax):
-                    linf = f'{cmin}{linf}'
-                    lsup = f'{cmax}{lsup}'
-                else: 
-                    continue
-            if (linf + lsup).isalpha():
-                if not prefix and (cmin <= linf <= cmax) and (cmin <= lsup <= cmax):
-                    linf = f'{linf}{rmin}'
-                    lsup = f'{lsup}{rmax}'
-                else:    
-                    continue
-            linf_cell = cell_address(linf)
-            lsup_cell = cell_address(lsup)
-            fnc = lambda x: sum((ord(c) - ord('A') + 1) * (26 ** i) for i, c in enumerate(reversed(x)))
-            linf_cell, lsup_cell = map(lambda x: (int(x[0]), int(fnc(x[1]))), (linf_cell, lsup_cell))
-            cell_rgn.update(
-                [
-                    f'{prefix}{col}{row}' for row, col in itertools.product(
-                    [x for x in range(linf_cell[0], lsup_cell[0] + 1)],
-                    [alpha_code(x) for x in range(linf_cell[1], lsup_cell[1] + 1)])
-                ]
-            )
-        cell_rgn = sorted(cell_rgn, key=lambda x: '{0: >4s}{1: >4s}'.format(*cell_address(x)))
-        return cell_rgn
+        ref_range = f"'{self.parent.title}'!{self.data_rng}"
+        return cells_in_range(ref_range, excel_slice)
 
     @classmethod
     def excel_table(cls, data:pd.Series, fill_value=''):
@@ -1871,8 +1887,6 @@ class ExcelTable(ExcelObject):
         )
         return fmls
 
-
-
     def __getitem__(self, excel_slice: str|list[str]) -> pd.DataFrame:
         cell_rgn = self._cell_rgn(excel_slice)
         value_cells = list(set(cell_rgn) & set(self.data.index))
@@ -1905,12 +1919,15 @@ class ExcelTable(ExcelObject):
             bflag = (rmin <= int(row) <= rmax) and (cmin <= f'{col.upper(): >2s}' <= cmax)
         return bflag
 
-    def minimun_table(self):
+    def minimun_table(self, any_row=False):
         # excel_slice = self.cells_in_data_rng(self.data.index.tolist())
         # mask = (self.data.index.isin(cell_rgn)) & (self.data.value != 0)
         # excel_slice = self.data.loc[mask, :].index.tolist()
         excel_slice = self.data_rng
         df = self[excel_slice]
+        if any_row:
+            mask = df.any(axis=1)
+            df = df[mask]
         return df
 
     def _repr_html_(self):
