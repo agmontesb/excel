@@ -9,10 +9,14 @@ import itertools
 from typing import Protocol, Type
 from collections.abc import Callable
 from enum import Enum, Flag
+import logging
 
 import excelxml
 import xlfunctions as xlf
 from xlobjects import *
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 
 token_specification = [
@@ -88,9 +92,14 @@ def pythonize_fml(fml: str, table_name: str, axis: None|Literal[0,1]=None, mask=
         match kind:
             case 'FUNCTION':
                 fnc_name = token_chr
-                suffix = '_' if fnc_name in ('IF', 'AND', 'OR') else ''
+                suffix = '_' if fnc_name in ('IF', 'AND', 'OR', 'ROUND') else ''
                 fnc_stack.append(fnc_name)
-                pyfml += f'xlf.{(fnc_name + suffix).lower()}'
+                fnc_name = (fnc_name + suffix).lower()
+                try:
+                    getattr(xlf, fnc_name)
+                except AttributeError:
+                    logger.log(logging.ERROR, f'Function {fnc_name} ({token_chr}) not found in xlfunctions')
+                pyfml += f'xlf.{fnc_name}'
             case 'ASSIGN':
                 if pyfml.count('=') > 0 and pyfml[-1] not in '<>':
                     pyfml += '='
@@ -1479,7 +1488,8 @@ class ExcelTable(ExcelObject):
             keys = list(rmap.keys())
             [next[col].append(row) for row in keys if len(rmap[row]) == 1 and (col := rmap.pop(row)[0])]
 
-            for _ in range(2):
+            ngrp = 0
+            for k in range(2):
                 for row in sorted(rmap.keys(), key=lambda x: len(rmap[x])):
                     columns = rmap.pop(row)
                     while columns:
@@ -1494,8 +1504,10 @@ class ExcelTable(ExcelObject):
                         if not mask:
                             next[frst_col].append(row)
                         else:
+                            ngrp += 1
+                            sgrp = f'{"RC"[k]}{ngrp}'
                             mask = [frst_col] + mask
-                            formulas.extend([(f'{col}{row}' if col.isalpha() else f'{row}{col}', row) for col in mask])
+                            formulas.extend([(f'{col}{row}' if col.isalpha() else f'{row}{col}', sgrp) for col in mask])
                             columns = [col for col in columns if col not in mask]
 
                 rmap, next = maps[1:]
@@ -1919,13 +1931,13 @@ class ExcelTable(ExcelObject):
             bflag = (rmin <= int(row) <= rmax) and (cmin <= f'{col.upper(): >2s}' <= cmax)
         return bflag
 
-    def minimun_table(self, any_row=False):
+    def minimun_table(self, any_row=True):
         # excel_slice = self.cells_in_data_rng(self.data.index.tolist())
         # mask = (self.data.index.isin(cell_rgn)) & (self.data.value != 0)
         # excel_slice = self.data.loc[mask, :].index.tolist()
         excel_slice = self.data_rng
         df = self[excel_slice]
-        if any_row:
+        if not any_row:
             mask = df.any(axis=1)
             df = df[mask]
         return df

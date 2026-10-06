@@ -18,7 +18,7 @@ from xlpatterns import from_a1_tuple, offset_rng, interval_regex, regex_range
 from xlpatterns import (cell_address as wscell_address,
                         cell_pattern as wscell_pattern,
                         code_alpha as excel_col_to_int,
-                        tbl_address,
+                        tbl_address, tbl_pattern,
                         from_r1c1_a1, 
                         formulaR1C1)
 
@@ -334,16 +334,26 @@ class OXLLoader:
         wb_pattern = '(?#<definedName name=name *=rng>)'
         cpattern = MarkupRe.compile(wb_pattern)
         fn = lambda coords: sum([from_a1_tuple(cell)[1:] for cell in coords.split(':')], tuple())
-        try:
-            defined_names = {
-                name: (tpl[0], fn(tpl[1])) 
-                for name, rng in cpattern.findall(content)
-                if (tpl := tbl_address(rng.replace('$', '')))
-            }
-            answ['_defined_names'] = defined_names
-        except Exception as e:
-            logger.debug(f'Error loading named ranges: {str(e)}')
-            answ['_defined_names'] = {}
+        defined_names = {}
+        for m in cpattern.finditer(content):
+            name, rng = m.groups()
+            tpl = tbl_address(rng.replace('$', ''))
+            try:
+                defined_names[name] = (tpl[0], fn(tpl[1]))
+            except Exception as e:
+                logger.debug(f'Error loading named range {name}: {rng}')
+        answ['_defined_names'] = defined_names
+
+        # try:
+        #     defined_names = {
+        #         name: (tpl[0], fn(tpl[1])) 
+        #         for name, rng in cpattern.findall(content)
+        #         if (tpl := tbl_address(rng.replace('$', '')))
+        #     }
+        #     answ['_defined_names'] = defined_names
+        # except Exception as e:
+        #     logger.debug(f'Error loading named ranges: {str(e)}')
+        #     answ['_defined_names'] = {}
         
         # 18.2.2 calcPr (Calculation Properties)
         # calcMode (Calculation Mode)
@@ -474,14 +484,15 @@ class OXLLoader:
         # shared: '<c r="I11" s="662"><f t="shared" si="0"/><v>0</v></c>
 
         range_regex = regex_range(ws_range)
-        val_regex = fr'<c r="(?P<adr>{range_regex})"(?: s="(?P<style>\w+)")*( t="(?P<type>\w+)")*>(?:(?:<f t="shared" si="\d+"/>)|(?:<f[^>]*>(?P<fml>.+?)</f>))*(?:(?:<v/>)|(?:<v[^>]*>(?P<val>.+?)</v>))</c>'
+        # val_regex = fr'<c r="(?P<adr>{range_regex})"(?: s="(?P<style>\w+)")*( t="(?P<type>\w+)")*>(?:(?:<f t="shared" si="\d+"/>)|(?:<f[^>]*>(?P<fml>.+?)</f>))*(?:(?:<v/>)|(?:<v[^>]*>(?P<val>.+?)</v>))</c>'
+        val_regex = fr'<c r="(?P<adr>{range_regex})"(?: s="(?P<style>\w+)")*( t="(?P<type>\w+)")*>(?:(?:<f(?: t="shared" (?:ref=".+?" )*si="(?P<si>\d+)"/*)*>)(?:(?P<fml>[^>]+)</f>)*)*(?:(?:<v/>)|(?:<v[^>]*>(?P<val>.+?)</v>))</c>'
         if not allCells:
             val_regex = f'(?#<c r="{range_regex}"=adr __NCHILDREN__="2" t=_t s=_s v.*=val>)'
         cpat = re.compile(val_regex)
         data = [(*m.span(), *m.groupdict().values()) for m in cpat.finditer(content)]
         try:
             df = (
-                pd.DataFrame(data, columns=['beg', 'end', 'adr', 'style', 'vtype', 'fml', 'val'])
+                pd.DataFrame(data, columns=['beg', 'end', 'adr', 'style', 'vtype', 'si', 'fml', 'val'])
                 .set_index('adr')
             )
         except Exception as e:
@@ -580,6 +591,7 @@ class OXLLoader:
             .map(unescape)
             .to_dict()
         )
+        shared_ndx = cell_df[~cell_df.si.isna()].index
         pairs = []
         for (adr, fml) in range_fmls:
             fml = unescape(fml)
@@ -603,10 +615,11 @@ class OXLLoader:
             ]
             fmls = [
                 (
-                    offset_rng(cell1, col_offset, row_offset),
+                    f_adr,
                     wscell_pattern.sub(lambda m: offset_rng(m.group(), col_offset, row_offset), fml)
                 )
                 for col_offset, row_offset in offsets
+                if (f_adr:=offset_rng(cell1, col_offset, row_offset)) in shared_ndx
             ]
             pairs.extend(fmls)
         fml_map.update(pairs) 

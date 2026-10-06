@@ -8,7 +8,7 @@ from datetime import datetime
 from datetime import date as pydate
 
 
-__all__ = ['sum', 'if_', 'sumif', 'sumifs', 'and_', 'or_']
+__all__ = ['sum', 'if_', 'sumif', 'sumifs', 'and_', 'or_', 'round_']
 
 func_dict = {}
 
@@ -100,3 +100,23 @@ def and_(*args):
 @register_function('math')
 def or_(*args):
     return any(args)
+
+@register_function('math')
+def round_(anumber, num_digits):
+    '''
+    Rounds a number to a spepcified number of digits
+    anumber: float, number to round.
+    num_digits: int. Number of digits you want to round. Negative rounds to the left of the decimal point;
+                     zero to the nearest integer.
+    
+    round(12345.6789, -2) == 12300
+    round(12398.1234, -2) == 12400
+
+    round(12345.6789, 0) == 12346
+    round(12345.2987, 0) == 12345
+
+    round(12345.6789, 3) == 12345.679
+    round(12345.6781, 3) == 12345.678
+
+    '''
+    return round(anumber, num_digits)
