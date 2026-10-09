@@ -1954,11 +1954,16 @@ class ExcelTable(ExcelObject):
 def load_workbook(filename):
     wbxlm = excelxml.load_workbook(filename)
     excel_wb = ExcelWorkbook(filename)
-    all_range = 'E2:I17'   # wbxlm.default_range
+    for ws_name in wbxlm.sheetnames:
+        excel_wb.create_worksheet(ws_name)
     for k, ws_name in enumerate(wbxlm.sheetnames, 1):
-        wsheet = excel_wb.create_worksheet(ws_name)
-        fmls, values = wbxlm.data_in_range(ws_name, all_range, allCells=False)
-        sht_tbl = ExcelTable(wsheet, f'sheet{k}_tbl', all_range, fmls, values)
+        wsxlm = wbxlm[ws_name]
+        wsheet = excel_wb[ws_name]
+        ws_range = wsxlm.ws_range
+        cells = wsxlm[ws_range]
+        fmls = {adr: f"={fml.lstrip('=+')}" for adr, cell in cells.items() if (fml := cell.formula_)}
+        values = {adr: cell.value for adr, cell in cells.items() if adr not in fmls}
+        _ = ExcelTable(wsheet, f'sheet{k}_tbl', ws_range, fmls, values)
     return excel_wb
 
 def main():
