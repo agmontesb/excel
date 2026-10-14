@@ -35,6 +35,7 @@ class TestTableComparator:
         df2 = tbl1.data
         tdf2 = TableComparator(df2)
 
+        tdmy = TableComparator.rebase(tdf1.df.set_index('cell'), tdf2.df.set_index('cell'))
         dmy = tdf1 ^ tdf2
 
         pass

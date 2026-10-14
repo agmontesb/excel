@@ -116,7 +116,8 @@ class CircularRef(Inmutable):
         self = cls()
         if isinstance(value, cls):
             return value
-        self.value = value or 0
+        self.value = value if value is not None or isinstance(value, EmptyCell) else 0 
+        # self.value = value or 0
         return self
     
     def __str__(self):
@@ -156,9 +157,12 @@ class EmptyCell:
         return self.__truediv__(other)
 
     def __eq__(self, value):
-        if (value is None or value == 0) or isinstance(value, EmptyCell):
+        if (value is None) or isinstance(value, EmptyCell):
             return True
         return False
+
+    def __hash__(self):
+        return id(self)
 
     def __bool__(self):
         return False

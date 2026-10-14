@@ -114,7 +114,7 @@ class TestXlFunctions:
         ('datevalue', ["22/8/2011"], 40777),
         ('datevalue', ["22-May-2011"], 40685),
         ('datevalue', ["2011/02/23"], 40597),
-        ('datevalue', ["5-JUL"], 45478),
+        ('datevalue', ["5-JUL"], xlf.datevalue(f'5/07/{date.today().year}')),
         ('datevalue', ["1/1/10000"], XlErrors.VALUE_ERROR),
         ('datevalue', ["31/12/1899"], XlErrors.VALUE_ERROR),
     ]))
@@ -718,8 +718,7 @@ class TestSetRecordsTable:
             df = sht_tbl.data
             assert (df.loc[tblv.index].value.map(str) == tblv).all()
             assert (
-                TableComparator(base_df)
-                .symmetric_difference(
+                TableComparator(base_df).symmetric_difference(
                     TableComparator(df),
                     fields=['res_order', 'value']
                 )

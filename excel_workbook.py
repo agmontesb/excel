@@ -1348,7 +1348,7 @@ class ExcelTable(ExcelObject):
         ws = tbl.parent
         to_process = set()
         changed = codes
-        data = data or tbl.data
+        data = data if data is not None else tbl.data
         if not isCoded:
             changed = (
                 data

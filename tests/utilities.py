@@ -111,11 +111,11 @@ class TableComparator:
 
         df.loc[:, ['code', 'fml', 'dependents']] = (
             df.loc[:, ['code', 'fml', 'dependents']]
-            .apply(lambda x: ExcelTable.encoder('decode', x, df=equiv))
+            .apply(lambda x: ExcelTable.encoder('encode', x, df=equiv))
         )
         df.loc[:, 'dependents'] = df.dependents.apply(lambda x: eval(x))
         df.loc[:, 'dependents'] = df.dependents.apply(
-                    lambda items: str(sorted(items, key=lambda x: TableComparator.sort_key(x)))
+                    lambda items: f'{{{str(sorted(items, key=lambda x: TableComparator.sort_key(x)))[1:-1]}}}'
                 )
         return df
 

@@ -5,7 +5,7 @@ import re
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from excelxml import interval_regex, digit_set, char_set
+from xlpatterns import interval_regex, digit_set, char_set
 
 @pytest.mark.parametrize("pos1, pos2, ref_set, zero_char, expected", [
     # Numeric tests
