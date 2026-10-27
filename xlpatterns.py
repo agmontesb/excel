@@ -118,6 +118,11 @@ def offset_rng(cells: str | list[str], col_offset: int = 0, row_offset: int = 0,
 digit_set = ('0123456789', '0')
 char_set = ('ABCDEFGHIJKLMOPQRSTUVWXYZ', chr(ord('A') - 1))
 
+MIN_ROWS = MIN_COLS = 1
+MAX_ROWS = 1_048_576
+MAX_COLS = code_alpha('XFD')
+
+
 def interval_regex(pos1: str, pos2: str, ref_set: str = digit_set[0], zero_char: str = digit_set[1], has_pfx: bool = False) -> str:
     '''
     cell_range = 'A5:A30'

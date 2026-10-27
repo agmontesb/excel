@@ -240,6 +240,59 @@ def cells_in_range(ref_range: str, excel_slice: tuple[str, ...] | str) -> list[s
     return cell_rgn
 
 
+def cells_in_range_proposal(ref_range: str, excel_slice: tuple[str, ...] | str) -> list[str]:
+    code_alpha = lambda x: sum((ord(c) - ord('A') + 1) * (26 ** i) for i, c in enumerate(reversed(x)))
+    parent_title, ref_range = tbl_address(ref_range)
+    (rmin, cmin),  (rmax, cmax) = map( cell_address, ref_range.split(':'))
+    rmin, rmax = map(int, (rmin, rmax))
+    cmin, cmax = map(code_alpha, (cmin, cmax))
+
+    if isinstance(excel_slice, str):
+        excel_slice = (excel_slice, )
+    cell_rgn = set()
+    for slice in excel_slice:
+        sheet, slice = tbl_address(slice)
+        prefix = '' if sheet in (None, parent_title) else f'\'{sheet}\'!'
+        slice = slice.upper().replace('$', '')
+        linf, lsup = f'{slice}:{slice}'.split(':', 2)[:2]
+        if (linf + lsup).isnumeric():
+            if not prefix and (rmin <= int(linf) <= rmax) and (rmin <= int(lsup) <= rmax):
+                linf = f'{alpha_code(cmin)}{linf}'
+                lsup = f'{alpha_code(cmax)}{lsup}'
+            else: 
+                continue
+        if (linf + lsup).isalpha():
+            if not prefix and (cmin <= code_alpha(linf) <= cmax) and (cmin <= code_alpha(lsup) <= cmax):
+                linf = f'{linf}{rmin}'
+                lsup = f'{lsup}{rmax}'
+            else:    
+                continue
+        linf_cell = cell_address(linf)
+        lsup_cell = cell_address(lsup)
+        linf_cell, lsup_cell = map(lambda x: (int(x[0]), code_alpha(x[1])), (linf_cell, lsup_cell))
+        if linf_cell[0] <= rmax and lsup_cell[0] >= rmin:
+            rmin = max(linf_cell[0], rmin)
+            rmax = min(lsup_cell[0], rmax)
+        else:
+            continue
+
+        if linf_cell[1] <= cmax and lsup_cell[1] >= cmin:
+            cmin = max(linf_cell[1], cmin)
+            cmax = min(lsup_cell[1], cmax)
+        else:
+            continue
+
+        cell_rgn.update(
+            [
+                f'{prefix}{col}{row}' for row, col in itertools.product(
+                [x for x in range(rmin, rmax + 1)],
+                [alpha_code(x) for x in range(cmin, cmax + 1)])
+            ]
+        )
+    cell_rgn = sorted(cell_rgn, key=lambda x: '{0: >4s}{1: >4s}'.format(*cell_address(x)))
+    return cell_rgn
+
+
 class ExcelObject(ABC):
         _title: str
         id: Any
@@ -335,7 +388,7 @@ class ExcelWorkbook(ExcelCollection):
         super().__init__(None, workbook_name, ExcelWorksheet)
         self.links = collections.defaultdict(set)
         self.parameters = collections.defaultdict(set)
-        self.count = -1
+        self.count = 0
         pass
 
     def next_id(self):
@@ -917,6 +970,8 @@ class ExcelTable(ExcelObject):
         def cell_list(fml):
             components = [x.replace('$', '').split(':') for x in set(rgn_pattern.findall(fml or ''))]
             return list(set(itertools.chain(*components)))
+
+        # values = {cell: val for adr, val in values.items() for cell in tbl._cell_rgn(adr)}
 
         keys = tbl.cells_in_data_rng(values.keys())
         if not keys:
@@ -1901,6 +1956,8 @@ class ExcelTable(ExcelObject):
 
     def __getitem__(self, excel_slice: str|list[str]) -> pd.DataFrame:
         cell_rgn = self._cell_rgn(excel_slice)
+        # ws = self.parent
+        # cell_rgn = cells_in_range(f"'{ws.title}'!{ws.data_rng}", excel_slice)
         value_cells = list(set(cell_rgn) & set(self.data.index))
         empty_cells =list(set(cell_rgn) - set(value_cells))
         data = pd.concat([

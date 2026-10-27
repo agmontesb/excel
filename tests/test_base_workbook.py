@@ -12,13 +12,82 @@ from datetime import date
 
 from excel_workbook import (
     TABLE_DATA_MAP, ExcelWorkbook, ExcelTable, XlErrors, 
-    cell_address, cell_pattern, pythonize_fml, 
+    cell_address, cell_pattern, pythonize_fml, cells_in_range, cells_in_range_proposal,
     tbl_address, rgn_pattern,
     CIRCULAR_REF, link_pattern
     )
 from utilities import TableComparator, tbl_data
 from fixtures import static_workbook as base_workbook
 import xlfunctions as xlf
+
+
+class TestKnownBugs:
+
+    @pytest.mark.xfail(reason="Bug: Cuando al momento de introducir una fórmula que hace referencia a una celda(s) en una tabla o hoja de cálculo que todavía no se ha creado, se produce un error que termina en un crash.")
+    def test_bug002_formulas_with_non_existing_links(self):
+        """
+        Bug: Cuando al momento de introducir una fórmula que hace referencia a una celda(s) en 
+        una tabla o hoja de cálculo que todavía no se ha creado, se produce un error que termina 
+        en un crash.
+        """
+        wb = ExcelWorkbook('excel_module_test')
+        ws = wb.create_worksheet('sheet1')
+        tbl = ws.create_table('tbl1', 'A1:C1000')
+        tbl.set_records(dict(A1=5), field='value')
+        try:
+            tbl.set_records(dict(A2="=1 + A1 + 'sheet2'!A2"), field='fml')
+        except Exception as e:
+            pytest.fail(f"Failed to set formula in A2: {e}")
+        pass
+
+    @pytest.mark.xfail(reason="Bug: No se pueden introducir registros en un rango de celdas de una tabla, por ejemplo, A1:C1000 con valor 20 o A3:A5 con fórmula '=SUM(B3:B5)'.")
+    def test_bug003_rango_records(self):
+        """
+        Bug: No se pueden introducir registros en un rango de celdas de una tabla, 
+        por ejemplo, A1:C1000 con valor 20 o A3:A5 con fórmula '=SUM(B3:B5)'. 
+        """
+        wb = ExcelWorkbook('excel_module_test')
+        ws = wb.create_worksheet('sheet1')
+        tbl = ws.create_table('tbl1', 'A1:C1000')
+        try:
+            tbl.set_records({'A2:A10':25}, field='value')
+        except KeyError as e:
+            pytest.fail(f"Failed to set records in range A2:A10: {e}")
+
+        try:
+            tbl.set_records({'A2:A10':'=SUM(B2:B10)'}, field='fml')
+        except KeyError as e:
+            pytest.fail(f"Failed to set records in range A2:A10: {e}")
+
+        pass
+
+    # next bug = 4
+
+
+class TestSolvedBugs:
+
+    def test_bug001_formulas_with_ranges(self):
+        """
+        Bug: Cuando se introduce una fórmula con un rango de celdas, como =SUM(B1:B1000), en la base de datos
+        se crean registros para las 1000 celdas (B1:B1000) a que hace referencia la fórmula. Esto genera un problema de performance y de memoria, 
+        ya que se crean muchos registros innecesarios.
+        Resuelto: Se estableció que todo registro en tbl.data debe corresponder a una celda de la tabla 
+        que contiene un valor o una fórmula o la referencia a una celda que se utiliza como ancla en un 
+        rango de celdas dentro de una fórmula.
+        """
+        wb = ExcelWorkbook('excel_module_test')
+        ws = wb.create_worksheet('sheet1')
+        tbl = ws.create_table('tbl1', 'A1:C1000')
+        tbl.set_records(dict(A1=5), field='value')
+        assert len(tbl.data) == 1
+        tbl.set_records(dict(A2='=SUM(B1:B1000)'), field='fml')
+        assert len(tbl.data) == 4
+        tbl.recalculate(recalc=True)
+        tbl.set_records(dict(B1=10, B2=20, B3=30), field='value')
+        assert len(tbl.data) == 6
+        tbl.recalculate(recalc=True)
+        pass
+
 
 
 class TestXlFunctions:
@@ -166,7 +235,6 @@ class TestXlFunctions:
         self.basic_testing(func_name, data, answer, base_workbook)
 
 
-
 class TestBaseWorkbook:
 
     def test_base_workbook(self, base_workbook):
@@ -177,7 +245,7 @@ class TestBaseWorkbook:
         sheet_names = ['No links, No parameters', 'Parameters and inner links', 'Outer links, outer parameter']
         assert base_workbook.sheetnames == sheet_names
 
-        sheet_ids = ['sheet', 'sheet1', 'sheet2']
+        sheet_ids = ['sheet1', 'sheet2', 'sheet3']
         assert sheet_ids == [sheet.id for sheet in base_workbook.sheets]
 
         assert all(
@@ -192,7 +260,7 @@ class TestBaseWorkbook:
         sheet = base_workbook['No links, No parameters']
         assert sheet.title == 'No links, No parameters'
         assert sheet.parent is base_workbook
-        assert sheet.id == 'sheet'
+        assert sheet.id == 'sheet1'
 
         table_names = ['sht1_tbl1', 'sht1_tbl2']
         assert sheet.tablenames == table_names
@@ -311,6 +379,22 @@ class TestHelperMethods:
         assert all(fnc(key) == value for key, value in cells_map.items()), 'Offset list of cells'
         assert len(cells) >= len(cells_map), 'Offset list of cells'
         assert all(predicate(x, kwargs['disc_cell']) for x in (set(cells) - cells_map.keys()))
+
+    @pytest.mark.parametrize("ref_range, excel_slice, answer, msg", [
+        ('A5:D50', 'C11', ['C11'], 'Cell in ref_range'),
+        ('A5:D50', 'F11', [], 'Cell out of ref_range'),
+        ('A5:D50', 'B:C', [f'{col}{row}' for row in range(5, 50 + 1) for col in 'BC'], 'Cell out of ref_range'),
+        ('A5:D50', 'B1:C100', [f'{col}{row}' for row in range(5, 50 + 1) for col in 'BC'], 'Cell out of ref_range'),
+        ('A5:D50', 'B1:C40', [f'{col}{row}' for row in range(5, 40 + 1) for col in 'BC'], 'Cell out of ref_range'),
+        ('A5:D50', 'B40:C100', [f'{col}{row}' for row in range(40, 50 + 1) for col in 'BC'], 'Cell out of ref_range'),
+        ('A5:D50', 'B10:C40', [f'{col}{row}' for row in range(10, 40 + 1) for col in 'BC'], 'Cell out of ref_range'),
+        ('A5:D50', '10:11', [f'{col}{row}' for row in range(10, 11 + 1) for col in 'ABCD'], 'Cell out of ref_range'),
+        ('A5:D50', 'A10:AA11', [f'{col}{row}' for row in range(10, 11 + 1) for col in 'ABCD'], 'Cell out of ref_range'),
+        ('A5:D50', 'C10:AA11', [f'{col}{row}' for row in range(10, 11 + 1) for col in 'CD'], 'Cell out of ref_range'),
+        ('A5:D50', 'B10:C11', [f'{col}{row}' for row in range(10, 11 + 1) for col in 'BC'], 'Cell out of ref_range'),
+    ])
+    def test_cells_in_range_proposal(self, ref_range, excel_slice, answer, msg):
+        assert cells_in_range_proposal(ref_range, excel_slice) == answer, msg 
 
 
 class TestErrorHandling:
