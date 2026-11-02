@@ -17,7 +17,8 @@ __all__ = [
     'alpha_code', 
     'TABLE_DATA_MAP', 'ColumnSpec', 'DataFrameStructure', 'structure', 
     'XlFlags', 'Inmutable', 'XlErrors', 'CircularRef', 'EmptyCell',
-    'CIRCULAR_REF', 'EMPTY_CELL'
+    'CIRCULAR_REF', 'EMPTY_CELL',
+    'XlRef'
 ]
 
 
@@ -174,25 +175,32 @@ CIRCULAR_REF = CircularRef()
 
 class XlRef:
 
-    def __init__(self, xlref: str):
-        sheet, xlslice = tbl_address(xlref)
+    def __init__(self, xlref: str | tuple[int, int] | tuple[int, int, int, int], sheet:str|None = None):
         self.sheet = sheet
-        self.adr = xlslice = xlslice.upper()
+        if isinstance(xlref, str):
+            sheet, xlslice = tbl_address(xlref)
+            self.sheet = self.sheet or sheet
+            self.adr = xlslice = xlslice.upper()
 
-        xlslice = xlslice.replace('$', '')
-        tl_ref, br_ref = f'{xlslice}:{xlslice}'.split(':', 2)[:2]
+            xlslice = xlslice.replace('$', '')
+            tl_ref, br_ref = f'{xlslice}:{xlslice}'.split(':', 2)[:2]
 
-        if all(x.isnumeric() for x in (tl_ref, br_ref)):  # row(s): '5:20', '10'
-            tl_row, br_row = map(int, (tl_ref, br_ref))
-            tl_col, br_col = MIN_COLS, MAX_COLS
-        elif all(x.isalpha() for x in (tl_ref, br_ref)):    # column(s): 'A:C', 'Z'
-            tl_col, br_col = map(code_alpha, (tl_ref, br_ref))
-            tl_row, br_row = MIN_ROWS, MAX_ROWS
-        else:   # general: 'A5', 'D1:Z20'
-            (tl_row, tl_col),  (br_row, br_col) = map(cell_address, (tl_ref, br_ref))
-            tl_row, br_row = map(int, (tl_row, br_row))
-            tl_col, br_col = map(code_alpha, (tl_col, br_col))
-        self.coords = (tl_row, tl_col, br_row, br_col)
+            if all(x.isnumeric() for x in (tl_ref, br_ref)):  # row(s): '5:20', '10'
+                tl_row, br_row = map(int, (tl_ref, br_ref))
+                tl_col, br_col = MIN_COLS, MAX_COLS
+            elif all(x.isalpha() for x in (tl_ref, br_ref)):    # column(s): 'A:C', 'Z'
+                tl_col, br_col = map(code_alpha, (tl_ref, br_ref))
+                tl_row, br_row = MIN_ROWS, MAX_ROWS
+            else:   # general: 'A5', 'D1:Z20'
+                (tl_row, tl_col),  (br_row, br_col) = map(cell_address, (tl_ref, br_ref))
+                tl_row, br_row = map(int, (tl_row, br_row))
+                tl_col, br_col = map(code_alpha, (tl_col, br_col))
+            coords = (tl_row, tl_col, br_row, br_col)
+        elif isinstance(xlref, tuple):
+            coords = xlref
+            self.adr = ':'.join(f'{alpha_code(coords[2*k+1])}{coords[2*k]}' for k in range(len(coords)//2))
+            coords = (2*coords)[:4]
+        self.coords = coords
 
     def isCell(self) -> bool:
         """
@@ -261,7 +269,9 @@ class XlRef:
 
         # Check if there is an intersection
         if inter_tl_row <= inter_br_row and inter_tl_col <= inter_br_col:
-            xlslice = f"{alpha_code(inter_tl_col)}{inter_tl_row}:{alpha_code(inter_br_col)}{inter_br_row}"
+            coords = ((inter_tl_col, inter_tl_row), (inter_br_col, inter_br_row))
+            k = 1 + (not other.isCell())
+            xlslice = ':'.join(f'{alpha_code(col)}{row}' for col, row in coords[:k] )
             xlref = f"'{self.sheet}'!{xlslice}" if self.sheet else xlslice
             return XlRef(xlref)
         
@@ -418,7 +428,7 @@ class XlRef:
         xlslice = ':'.join(f'{col[1]}{row[1]}' for row, col in zip(rows, cols))
         return f'{prefix}{xlslice}'
 
-    def __contains__(self, item: str | 'XlRef') -> bool:
+    def __contains__(self, other: str | 'XlRef') -> bool:
         """
         Checks if a given cell reference or XlRef object is within the range defined by this XlRef object.
 
@@ -434,13 +444,15 @@ class XlRef:
             XlRef('D5:E6') in 'A1:D5' == False
 
         """
-        if isinstance(item, str):
-            item = XlRef(item)
-        if not isinstance(item, XlRef):
+        if isinstance(other, str):
+            other = XlRef(other)
+        if not isinstance(other, XlRef):
             return False
 
-        xlref = self.intersects(item)
-        return xlref is not None and xlref.coords == item.coords  # Ensure both are XlRef objects
+        coord1, coord2 = self.coords, other.coords
+        m = 2 if other.isCell() else 4
+        bflag = all(coord1[k := n % 2] <= coord2[n] <= coord1[k + 2] for n in range(m))
+        return bflag
 
     def __str__(self):
         return f"'{self.sheet}'!{self.adr}" if self.sheet else self.adr

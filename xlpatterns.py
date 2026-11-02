@@ -9,7 +9,7 @@ token_specification = [
     ('STRING', r'".*?"'),  # string
     ('ASSIGN', r'\='),  # Assignment operator
     ('SOP', r'^|&|<>'),  # Special operators
-    ('OP', r'[+\-*/]'),  # Arithmetic operators
+    ('OP', r'[+\-*/]|<=|>=|<|>'),  # Arithmetic operators
     ('COMMA', r','),  # Line endings
     ('ANCHOR', r'\:'),  # Line endings
     ('OPENP', r'\('),  # Line endings
@@ -31,6 +31,8 @@ rgn_pattern_grp = re.compile("(?:'(?P<sht>.+?)'!)*(?P<col>\\$?[A-Z]+)(?P<row>\\$
 rgn_pattern = re.compile(r"(?:'.+?'!)*\$?[A-Z]\$?[0-9]+(?::\$?[A-Z]\$?[0-9]+)?")
 tbl_pattern = re.compile(r"(?:'(?P<sht>.+?)'!)*(?P<cell>.+)")
 tbl_address = lambda tbl: tbl_pattern.match(tbl).groups()
+
+r1c1rgn_pattern = re.compile(r"(?:'.+?'!)*R[0-9\]\-\[]*C[0-9\]\-\[]*(?::R[0-9\]\-\[]*C[0-9\]\-\[]*)?")
 
 def alpha_code(id, nbase=26):
     answ = []

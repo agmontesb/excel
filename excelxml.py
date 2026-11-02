@@ -1,6 +1,6 @@
 from html import unescape
 import os
-from typing import Any, Generator
+from typing import Any, Generator, Literal
 import zipfile
 import shutil
 import tempfile
@@ -13,12 +13,12 @@ from concurrent.futures import ThreadPoolExecutor
 from worksheetui import SheetState, SheetContextData, COL_CELLS_WIDTH, ROW_CELLS_HEIGHT, CELL_WIDTH, CELL_HEIGHT
 import mywidgets.Tools.uiStyle.MarkupRe as MarkupRe
 from mywidgets.Widgets.Custom import navigationbar
-from xlobjects import XlErrors
+from xlobjects import XlErrors, XlRef
 from xlpatterns import from_a1_tuple, offset_rng, interval_regex, regex_range
 from xlpatterns import (cell_address as wscell_address,
                         cell_pattern as wscell_pattern,
                         code_alpha as excel_col_to_int,
-                        tbl_address, tbl_pattern,
+                        tbl_address, rgn_pattern,
                         from_r1c1_a1, 
                         formulaR1C1)
 
@@ -42,8 +42,9 @@ class Cell(namedtuple('Cell', ['address', 'formula_', 'value', 'style', 'span'],
 
     @property
     def formulaR1C1(self):
-        # return formulaR1C1(self.formula_, self.address) if self.formula_ is not None else self.value
-        fmlr1c1 = formulaR1C1(self.formula, self.address)
+        # fmlr1c1 = formulaR1C1(self.formula, self.address)
+        fn = lambda m, xlref=XlRef(self.address): xlref.r1c1_xlref(m.group())
+        fmlr1c1 = rgn_pattern.sub(fn, self.formula)
         return fmlr1c1
     
     def params(self) -> dict[str, Any]:
@@ -80,34 +81,66 @@ class WorkSheetXml:
         self.coords_vportq1: tuple[int, int] = self.coords_vportq3        
         pass
 
-    def __getitem__(self, range_str: str): # -> dict[str, str] | 'WorkSheetXml.Cell' | None:
-        range_regex = regex_range(range_str)
-        if range_regex == range_str:
+    def __getitem__(self, range_str:str):
+        xlref = XlRef(range_str)
+        if xlref.isCell():
             return self.cells.get(range_str, None)
-        pattern = re.compile(f'^{range_regex}$')
-        cells = {
-            adr: cell
-            for adr, cell in self.cells.items()
-            if pattern.match(adr)
-        }
+        xlref = XlRef(self.ws_range).intersects(xlref)
         fnc = lambda x: '{0: >4s}{1: >4s}'.format(*wscell_address(x))
-        return {key: cells[key] for key in sorted(cells.keys(), key=lambda x: fnc(x))}
-    
-    def cell(self, row:int, column:int, *args) -> 'WorkSheetXml.Cell':
-        adr1 = from_r1c1_a1(f'R{row}C{column}')
-        if not args:
-            return self.cells.get(adr1, Cell(adr1))
-        adr2 = from_r1c1_a1(f'R{args[0]}C{args[1]}')
-        cell_rng = f'{adr1}:{adr2}'
-        rng_rgx = regex_range(cell_rng)
-        pattern = re.compile(rng_rgx)
-        answ = {key: value for key, value in self.cells.items() if pattern.fullmatch(key)}
-        return answ
+        keys = sorted(self.cells.keys() & set(xlref.cells()), key=fnc)
+        cells = {
+            adr: self.cells[adr]
+            for adr in keys
+        }
+        return cells
 
+    def cell(self, row:int, column:int, *args: tuple[int, int], column_wise: bool = True) -> 'WorkSheetXml.Cell':
+        wsxlref = XlRef(self.ws_range)
+        if not args:
+            cell = XlRef(row, column).adr
+            return self.cells.get(cell, None)
+        coords = (row, column) + args
+        try:
+            assert len(coords) == 4
+        except AssertionError:
+            return XlErrors.REF_ERROR
+
+        it = self.iter_rows(*coords)
+        return {cell.adr: cell for cell in it}
+ 
     def iter_rows(self, min_row:int=None, min_col:int=None, max_row:int=None, 
                   max_col:int=None, values_only:bool=False) -> Generator:
-        
-        pass
+        wsxlref = XlRef(self.ws_range)
+        coords = (min_row , min_col, max_row, max_col)
+        coords = tuple(x or y for x, y in zip(coords, wsxlref.coords))
+        if coords != wsxlref.coords:
+            xlref = wsxlref.intersects(XlRef(*coords))
+            if xlref is None:
+                return None
+        else:
+            xlref = wsxlref
+        keys = self.cells.keys()
+        it = (self.cells[cell] for cell in xlref.cells() if cell in keys)
+        if values_only:
+            it = (cell.value for cell in it)
+        return it
+
+    def iter_cols(self, min_row:int=None, min_col:int=None, max_row:int=None, 
+                  max_col:int=None, values_only:bool=False) -> Generator:
+        wsxlref = XlRef(self.ws_range)
+        coords = (min_row , min_col, max_row, max_col)
+        coords = tuple(x or y for x, y in zip(coords, wsxlref.coords))
+        if coords != wsxlref.coords:
+            xlref = wsxlref.intersects(XlRef(*coords))
+            if xlref is None:
+                return None
+        else:
+            xlref = wsxlref
+        keys = self.cells.keys()
+        it = (self.cells[cell] for cell in xlref.cells(column_wise=False) if cell in keys)
+        if values_only:
+            it = (cell.value for cell in it)
+        return it
 
 
 class WorkBookXml:
@@ -246,7 +279,6 @@ class OXLLoader:
 
         df = pd.concat(results, ignore_index=True)
         return df
-
 
     def parse_shared_strings(loader) -> list[str]:
         content = loader.load_xmlfile('xl/sharedStrings.xml', isAbs=False)
@@ -501,7 +533,6 @@ class OXLLoader:
             raise Exception(msg)
         return df
     
-
     def get_cell_data_old(loader, ws_range: str, content: str, allCells=True) -> pd.DataFrame:
         range_regex = regex_range(ws_range)
         seek_str = f'<c\\s[^>]*r="{range_regex}"[^>]*[/]*>'
@@ -593,37 +624,50 @@ class OXLLoader:
         )
         shared_ndx = cell_df[~cell_df.si.isna()].index
         pairs = []
-        for (adr, fml) in range_fmls:
-            fml = unescape(fml)
-            cell1, cell2 = f'{adr}:{adr}'.split(':', 2)[:2]
-            (linfy, linfx), (lsupy, lsupx) = map(
-                    lambda x: (int(x[0]), excel_col_to_int(x[1])),
-                    map(wscell_address, (cell1, cell2))
-            )
-
-            bflag = lsupy < min_y or max_y < linfy or lsupx < min_x or max_x < linfx
-            if bflag:
-                continue
-
-            origen_x, origen_y = linfx, linfy
-            linfy, linfx = max(linfy, min_y), max(linfx, min_x)
-            lsupy, lsupx = min(lsupy, max_y), min(lsupx, max_x)
-            offsets = [
-                (col, row)
-                for col in range(linfx - origen_x, lsupx - origen_x + 1)
-                for row in range(linfy - origen_y, lsupy - origen_y + 1)
-            ]
-            fmls = [
-                (
-                    f_adr,
-                    wscell_pattern.sub(lambda m: offset_rng(m.group(), col_offset, row_offset), fml)
-                )
-                for col_offset, row_offset in offsets
-                if (f_adr:=offset_rng(cell1, col_offset, row_offset)) in shared_ndx
-            ]
-            pairs.extend(fmls)
+        data = {adr: unescape(fml) for adr, fml in range_fmls}
+        pairs = loader.plain_data(data, field='fml')
         fml_map.update(pairs) 
         return fml_map
+
+    @classmethod
+    def plain_data(
+        cls,
+        data: dict[str, str],
+        field: Literal["fml", "values"] = "fml",
+    ) -> dict[str, str]:
+        """Expand cell and range references into a mapping of individual cells.
+
+        Args:
+            data: Mapping of Excel cell references or ranges to their formula or value.
+            field: Use ``"fml"`` to expand formulas and adjust their references for
+                each cell in a range. Use ``"values"`` to copy the value to each cell.
+
+        Returns:
+            A dictionary mapping individual cell references to formulas or values.
+
+        Examples:
+            >>> OXLLoader.plain_data({"A1:A2": "10"}, field="values")
+            {'A1': '10', 'A2': '10'}
+        """
+        values = {}
+        for xlrefstr, fml in data.items():
+            xlref = XlRef(xlrefstr)
+            cells = list(xlref.cells())
+            for xlrefstr, fml in data.items():
+                xlref = XlRef(xlrefstr)
+                cells = list(xlref.cells())
+                if not xlref.isCell() and field == 'fml':
+                    r1c1_refs = [xlref.r1c1_xlref(refstr) for refstr in rgn_pattern.findall(fml)]
+                    fml_fmt = rgn_pattern.sub('{}', fml)
+                    values.update(
+                        [
+                            (cell, fml_fmt.format(*list(map(XlRef(cell).a1_xlref, r1c1_refs)))) 
+                            for cell in cells
+                        ]
+                    )
+                else:
+                    values.update((cell, fml) for cell in cells)
+        return values
     
 
 def load_workbook(filename: str|None=None) -> WorkBookXml:

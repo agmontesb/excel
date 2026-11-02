@@ -14,48 +14,34 @@ import logging
 import excelxml
 import xlfunctions as xlf
 from xlobjects import *
+from xlpatterns import (
+    token_specification, tokenizer,
+    link_pattern, 
+    cell_pattern, cell_address,
+    rgn_pattern_grp, rgn_pattern,
+    tbl_pattern, tbl_address,
+    r1c1rgn_pattern
+)
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-
-token_specification = [
-    ('NUMBER', r'\d+(\.\d*)?'),  # Integer or decimal number
-    ('STRING', r'".*?"'),  # string
-    ('ASSIGN', r'\='),  # Assignment operator
-    ('SOP', r'^|&|<>'),  # Special operators
-    ('OP', r'[+\-*/]|<=|>=|<|>'),  # Arithmetic operators
-    ('COMMA', r','),  # Line endings
-    ('ANCHOR', r'\:'),  # Line endings
-    ('OPENP', r'\('),  # Line endings
-    ('CLOSEP', r'\)'),  # Line endings
-    ('BOOL', r'TRUE|FALSE'),  # Line endings
-    ('SHEET', r"'[^']+'!"),  # Sheet names
-    ('ERROR', r'#[A-Z/0]+[!?]'), # Error values
-    ('CELL', r'\$?[A-Z]\$?[1-9][0-9]*'),  # Identifiers
-    ('FUNCTION', r'[A-Z]+'),  # Skip over spaces and tabs
-    ('SKIP', r'[ %]+'),  # Skip over spaces and tabs
-    ('MISMATCH', r'.'),  # Any other character
-]
-tokenizer = re.compile('|'.join('(?P<%s>%s)' % pair for pair in token_specification))
-
-link_pattern = re.compile(r"((?:'(?:.+?)'!)+(?:\$?[A-Z])+(?:\$?[0-9])+)")
-cell_pattern = re.compile(r"(?:'(?P<sht>.+?)'!)*(?P<col>\$?[A-Z]+)(?P<row>\$?[0-9]+)")
-cell_address:Callable[[str], tuple[str, ...]] = lambda cell: tuple(x for x in cell_pattern.search(cell).groups()[::-1] if x)
-rgn_pattern_grp = re.compile("(?:'(?P<sht>.+?)'!)*(?P<col>\\$?[A-Z]+)(?P<row>\\$?[0-9]+)(?::\\$?[A-Z]\\$?[0-9]+)?")
-rgn_pattern = re.compile(r"(?:'.+?'!)*\$?[A-Z]\$?[0-9]+(?::\$?[A-Z]\$?[0-9]+)?")
-tbl_pattern = re.compile(r"(?:'(?P<sht>.+?)'!)*(?P<cell>.+)")
-tbl_address = lambda tbl: tbl_pattern.match(tbl).groups()
 
 ndx_sorter = lambda x: ('0000' + x.str.extract(r'(\d+)', expand=False)).str.slice(-4) + x.str.extract(r'([A-Z]+)', expand=False)
 
 flatten_sets = lambda items: set(itertools.chain(*items))
 
 def excel_to_pandas_slice(excel_slice, axis, table_name, mask=None, withValues=False):
+    """
+    Transforms:
+        F12 => "tbl['F12'].values"  (excel_slice='F12', axis=None, table_name='tbl', mask=None, withValues=True)
+        F12 => "tbl['F12', 'F13', 'F14'].values"  (excel_slice='F12', axis=0, table_name='tbl', mask=['12', '13', '14'], withValues=True)    sheet, lst_id = tbl_address(excel_slice)
+    """
     sheet, lst_id = tbl_address(excel_slice)
     linf = f'{lst_id}:{lst_id}'.split(':', 1)[0]
-    is_anchor = (linf[0] == '$' if axis == 0 else linf[1:].count('$') == 1)
-    cell = row, col = cell_address(linf.replace('$', ''))
+    row, col = cell_address(linf)
+    is_anchor = (col[0] == '$' if axis == 0 else row[0] == 1)
+    cell = row, col = row.replace('$', ''), col.replace('$', '')
     mask = mask if not is_anchor else None
     if mask is None or (row not in mask and col not in mask):
         prefix = f"'{excel_slice}'" if sheet is None else f'"{excel_slice}"'
@@ -79,6 +65,11 @@ def pythonize_fml(fml: str, table_name: str, axis: None|Literal[0,1]=None, mask=
     :param table_name: str. Nombre de la tabla que contiene la fórmula
     :param axis: int. Eje de la tabla que se está procesando
     :return: str. Fórmula de Python
+
+    :Examples:
+        '=DAYS360(F12, G12, TRUE)' => "=xlf.days360(tbl['F12'].values,tbl['G12'].values,True)"
+        '=DAYS360(F12, G12)' => "=xlf.days360(tbl['F12'].values,tbl['G12'].values)"
+        '=SUM(A1:A10) + #REF!' => "=xlf.sum(tbl['A1:A10'].values)+XlErrors.REF_ERROR"
     '''
 
     pyfml = ''
@@ -157,17 +148,33 @@ def pythonize_fml(fml: str, table_name: str, axis: None|Literal[0,1]=None, mask=
 
 
 def pass_anchors(coord1, coord2):
+    """
+        ('A12', '$D2') => 'D2'
+        ('A12', '$D$2') => 'D2'
+        ('$A12', '$D$2') => '$D2'
+        ('A$12', '$D$2') => 'D$2'
+        ("'sheet1'!A$12", '$D2') => 'D$2'
+        ("'sheet1'!A$12", "'sheet2'!$D2") => "'sheet2'!D$2"
+
+    """
     anchors = ['$' if x[0] == '$' else '' for x in cell_pattern.match(coord1).groups()[1:]]
     sheet_name, *coords = cell_pattern.findall(coord2.replace('$', ''))[0]
     sheet = '' if not sheet_name else f"'{sheet_name}'!"
     return sheet + ''.join(x for tup in zip(anchors, coords) for x in tup)
 
 
-def coords_from_range(rng):
+def coords_from_range(rng:str) -> dict[str, int]:
     '''
     Encuentra el rango en que se revisaran las fórmulas.
     fml_col: str. Optional, si es None se supone que el rango de fórmulas es el que sigue al rng.
     rng: str. Rango de tabla que incluye concepto (ej: "B010:G227"
+    
+    Examples:
+        ('A10:B15') => {'min_col': 1, 'min_row': 10, 'max_col': 3, 'max_row': 16}
+        ('A10') => ValueError()
+        ('$A10:B15') => ValueError()
+        ('$A10:B$15') => ValueError()
+
     '''
     rng_inf, rng_sup = rng.split(':')
     min_col, min_row = ord(rng_inf[0]) - ord('A') + 1, int(rng_inf[1:])
@@ -175,7 +182,25 @@ def coords_from_range(rng):
     return dict(min_col=min_col, min_row=min_row, max_col=max_col, max_row=max_row)
 
 
-def shrink_range(linf, lsup, changes):
+def shrink_range(linf:str, lsup:str, changes:list[str]) -> list[str]:
+    """
+        Examples:
+        parameters /=> known bug => answer 
+        ('A5', 'F10', ['B', 'D']) => ['A5', 'D10']
+        ('A5', '$F10', ['B', 'D']) => ['A5', '$F10']
+        ('J9', 'O15', ['K', 'N']) => ['J9', 'M15']
+        ('J9', '$O15', ['K', 'N']) /=> ['J9', '$O15']  => ['J9', '$M15'] 
+        ('J9', 'O15', ['Q', 'R']) /=> ('J9', 'O15') => ['J9', 'O15']
+        ('J9', 'O15', ['G', 'H']) /=> ['J9', 'M15'] => ['H9', 'M15']
+        ('J9', '$O15', ['G', 'H']) /=> ('J9', '$O15') => ['H9', '$M15']
+        ('$J9', '$O15', ['G', 'H']) /=> ('J9', '$O15') => ['$H9', '$M15']
+        ('J9', 'O15', ['H', 'M', 'O']) /=> ['J9', 'L15'] => ['I9', 'M15']
+        # Los elementos de changes no pueden incluir referencias a rangos de columns o rows
+        ('J9', 'O10', ['J:L']) /=> TypeError() => ['J9', 'K9', 'L9', 'J10', 'K10', 'L10']
+        ('J9', 'O15', list('HIJKLMNOPQ')) /=> ['J9', 'G15'] => '#REF!'
+        # Se puede incluir la hoja del ancla:
+        ("'sht1'!J9", "'sht2'!O15", ['J', 'K', 'L']) /=> ["'sht1'!J9", "'sht2'!L15"]
+    """
     del_what = 'row' if changes[0].isnumeric() else 'col'
     bflag = del_what == 'col'
     k1, k2, fnc, gnc = (2, 3, ord, chr) if bflag else (3, 2, int, str)
@@ -201,6 +226,28 @@ def shrink_range(linf, lsup, changes):
 
 
 def cells_in_range(ref_range: str, excel_slice: tuple[str, ...] | str) -> list[str]:
+    """
+        Lista las celdas en excel_slice (('I9:M15', 'I1:I5') => ['I1', 'I2', 'I3', 'I4', 'I5']). 
+        ref_range se utiliza solamente para acotar referencias a columnas o filas (('I9:K11', 'I') => ['I9', 'I10', 'I11'])
+
+        Examples:
+        parameters /=> known bug => answer 
+        ('I9:M15', 'J11') => ['J11']            # Forma básica
+        # excel_slice acepta referencias de rango (incluye ':'), anchors ('$'), letras mayúsculas y minúsculas
+        ('I9:M15', 'j11') => ['J11']            
+        ('I9:M15', 'J$11') => ['J11']
+        ('I9:M15', 'J11:K12') => ['J11', 'K11', 'J12', 'K12']
+        ('I9:M15', 'J$11:K12') => ['J11', 'K11', 'J12', 'K12']
+        ('I9:M15', '$J$11:$K$12') => ['J11', 'K11', 'J12', 'K12']
+        # ref_range debe ser una referncia a rango (incluye ':') sin anchors, sin minúsculas
+        ('I9:m15', 'J11') /=> AttributeError() => ['J11']
+        ('I$9:M15', 'J11') /=> ValueError() => ['J11']
+        # ref_range solo se utiliza cuando se tiene referencia a columnas('I') o filas ('10')
+        ('I9:M15', 'I1:I5') => ['I1', 'I2', 'I3', 'I4', 'I5']
+        ('I9:K11', 'I') => ['I9', 'I10', 'I11']
+        ('I9:K11', 'I:J') => ['I9', 'J9', 'I10', 'J10', 'I11', 'J11']
+        
+    """
     parent_title, ref_range = tbl_address(ref_range)
     (rmin, cmin),  (rmax, cmax) = map( cell_address, ref_range.split(':'))
     rmin, rmax = int(rmin), int(rmax)
@@ -234,59 +281,6 @@ def cells_in_range(ref_range: str, excel_slice: tuple[str, ...] | str) -> list[s
                 f'{prefix}{col}{row}' for row, col in itertools.product(
                 [x for x in range(linf_cell[0], lsup_cell[0] + 1)],
                 [alpha_code(x) for x in range(linf_cell[1], lsup_cell[1] + 1)])
-            ]
-        )
-    cell_rgn = sorted(cell_rgn, key=lambda x: '{0: >4s}{1: >4s}'.format(*cell_address(x)))
-    return cell_rgn
-
-
-def cells_in_range_proposal(ref_range: str, excel_slice: tuple[str, ...] | str) -> list[str]:
-    code_alpha = lambda x: sum((ord(c) - ord('A') + 1) * (26 ** i) for i, c in enumerate(reversed(x)))
-    parent_title, ref_range = tbl_address(ref_range)
-    (rmin, cmin),  (rmax, cmax) = map( cell_address, ref_range.split(':'))
-    rmin, rmax = map(int, (rmin, rmax))
-    cmin, cmax = map(code_alpha, (cmin, cmax))
-
-    if isinstance(excel_slice, str):
-        excel_slice = (excel_slice, )
-    cell_rgn = set()
-    for slice in excel_slice:
-        sheet, slice = tbl_address(slice)
-        prefix = '' if sheet in (None, parent_title) else f'\'{sheet}\'!'
-        slice = slice.upper().replace('$', '')
-        linf, lsup = f'{slice}:{slice}'.split(':', 2)[:2]
-        if (linf + lsup).isnumeric():
-            if not prefix and (rmin <= int(linf) <= rmax) and (rmin <= int(lsup) <= rmax):
-                linf = f'{alpha_code(cmin)}{linf}'
-                lsup = f'{alpha_code(cmax)}{lsup}'
-            else: 
-                continue
-        if (linf + lsup).isalpha():
-            if not prefix and (cmin <= code_alpha(linf) <= cmax) and (cmin <= code_alpha(lsup) <= cmax):
-                linf = f'{linf}{rmin}'
-                lsup = f'{lsup}{rmax}'
-            else:    
-                continue
-        linf_cell = cell_address(linf)
-        lsup_cell = cell_address(lsup)
-        linf_cell, lsup_cell = map(lambda x: (int(x[0]), code_alpha(x[1])), (linf_cell, lsup_cell))
-        if linf_cell[0] <= rmax and lsup_cell[0] >= rmin:
-            rmin = max(linf_cell[0], rmin)
-            rmax = min(lsup_cell[0], rmax)
-        else:
-            continue
-
-        if linf_cell[1] <= cmax and lsup_cell[1] >= cmin:
-            cmin = max(linf_cell[1], cmin)
-            cmax = min(lsup_cell[1], cmax)
-        else:
-            continue
-
-        cell_rgn.update(
-            [
-                f'{prefix}{col}{row}' for row, col in itertools.product(
-                [x for x in range(rmin, rmax + 1)],
-                [alpha_code(x) for x in range(cmin, cmax + 1)])
             ]
         )
     cell_rgn = sorted(cell_rgn, key=lambda x: '{0: >4s}{1: >4s}'.format(*cell_address(x)))
@@ -971,8 +965,8 @@ class ExcelTable(ExcelObject):
             components = [x.replace('$', '').split(':') for x in set(rgn_pattern.findall(fml or ''))]
             return list(set(itertools.chain(*components)))
 
-        # values = {cell: val for adr, val in values.items() for cell in tbl._cell_rgn(adr)}
-
+        values = excelxml.OXLLoader.plain_data(values, field=field)
+            
         keys = tbl.cells_in_data_rng(values.keys())
         if not keys:
             return

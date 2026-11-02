@@ -36,6 +36,27 @@ class Test_XlRef:
         assert xlref.coords[::2] == tuple(map(int, rows))
         assert xlref.coords[1::2] == tuple(map(code_alpha, cols))
 
+    @pytest.mark.parametrize("tuple_xlref", [
+        (1, 1), 
+        (5, 8),
+        (1, 1, 5, 8),
+    ])
+    def test_tuple_xlref(self, tuple_xlref):
+        xlref = XlRef(tuple_xlref)
+        refstr = str(xlref)
+
+        sheet, xlslice = tbl_address(refstr)
+        prefix = f"'{sheet}'!" if sheet else ''
+        anchors = f'{xlslice.upper()}:{xlslice.upper()}'.split(':', 2)[:2]
+        rows, cols = zip(*map(cell_address, anchors))
+
+        assert str(xlref) == f'{prefix}{xlslice.upper()}'
+        assert xlref.sheet == sheet
+        assert xlref.adr == xlslice.upper()
+        assert xlref.coords[::2] == tuple(map(int, rows))
+        assert xlref.coords[1::2] == tuple(map(code_alpha, cols))
+
+
     @pytest.mark.parametrize("xlrefstr, answer", [
         ('A1', True),
         ('A1:B10', False), ('A1:A1', False), ('A:C', False), ('1:10', False), 
@@ -117,20 +138,6 @@ class Test_XlRef:
     def test_offset(self, row_off, col_off, answer):
         xlref_base = XlRef('B4:$C$6')
         assert xlref_base.offset(row_off, col_off) == answer
-
-    @pytest.mark.parametrize("xlrefstr, xlref_base, answer", [
-        ('B5', None, 'R5C2'),
-        ('$B$5', None, 'R5C2'),
-        ('B5', XlRef('A1'), 'R[4]C[1]'),
-        ('$B$5', XlRef('A1'), 'R5C2'),
-        ('B$5', XlRef('A1'), 'R5C[1]'),
-        ('$B5', XlRef('A1'), 'R[4]C2'),
-        ('B5', XlRef('A5'), 'RC[1]'),
-        ('A15', XlRef('A5'), 'R[10]C'),
-        ('$B$5', XlRef('A5'), 'R5C2'),
-    ])
-    def test_r1c1_ref(self, xlrefstr, xlref_base, answer):
-        assert XlRef(xlrefstr).r1c1_ref(xlref_base) == answer
 
     @pytest.mark.parametrize("xlref_base, xlref, answer", [
         ('B5', None, 'R5C2'),

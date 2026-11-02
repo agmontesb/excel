@@ -2,6 +2,8 @@ import ast
 import operator
 import pandas as pd
 import openpyxl as px
+from collections.abc import Callable
+from typing import Any
 
 import data
 from excel_workbook import (
@@ -120,6 +122,28 @@ class TableComparator:
         return df
 
 
+def exec_time(
+    f1: Callable[..., Any],
+    f2: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> None:
+    '''
+    Helper function that benchmarks two functions with the same arguments
+    '''
+
+    from statistics import median
+    from timeit import repeat
+
+    number = 1_000
+    ntimes = 7
+
+    # Check they return equivalent results before timing.
+    assert f1(*args, **kwargs) == f2(*args, **kwargs)
+
+    for fnc in (f1, f2):
+        f_times = repeat(lambda f=fnc: f(*args, **kwargs), number=number, repeat=ntimes)
+        print(f"{fnc.__name__}:    {median(f_times) / number * 1_000_000:.2f} µs/call")
 
 
 def excel_df(tbl_str, top_left_cell):

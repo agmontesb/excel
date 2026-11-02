@@ -12,7 +12,7 @@ from datetime import date
 
 from excel_workbook import (
     TABLE_DATA_MAP, ExcelWorkbook, ExcelTable, XlErrors, 
-    cell_address, cell_pattern, pythonize_fml, cells_in_range, cells_in_range_proposal,
+    cell_address, cell_pattern, pythonize_fml, cells_in_range,
     tbl_address, rgn_pattern,
     CIRCULAR_REF, link_pattern
     )
@@ -313,7 +313,6 @@ class TestBaseWorkbook:
         assert all(42420 in value for value in new_values), 'Change parameter not reported'
         assert all(old != new for old, new in zip(old_values, new_values)), 'Change parameter not applied'
 
-
     def test_ws_cell_values(self, base_workbook):
         ws = base_workbook['Outer links, outer parameter']
         tbl = ws['sht3_tbl1']
@@ -379,22 +378,6 @@ class TestHelperMethods:
         assert all(fnc(key) == value for key, value in cells_map.items()), 'Offset list of cells'
         assert len(cells) >= len(cells_map), 'Offset list of cells'
         assert all(predicate(x, kwargs['disc_cell']) for x in (set(cells) - cells_map.keys()))
-
-    @pytest.mark.parametrize("ref_range, excel_slice, answer, msg", [
-        ('A5:D50', 'C11', ['C11'], 'Cell in ref_range'),
-        ('A5:D50', 'F11', [], 'Cell out of ref_range'),
-        ('A5:D50', 'B:C', [f'{col}{row}' for row in range(5, 50 + 1) for col in 'BC'], 'Cell out of ref_range'),
-        ('A5:D50', 'B1:C100', [f'{col}{row}' for row in range(5, 50 + 1) for col in 'BC'], 'Cell out of ref_range'),
-        ('A5:D50', 'B1:C40', [f'{col}{row}' for row in range(5, 40 + 1) for col in 'BC'], 'Cell out of ref_range'),
-        ('A5:D50', 'B40:C100', [f'{col}{row}' for row in range(40, 50 + 1) for col in 'BC'], 'Cell out of ref_range'),
-        ('A5:D50', 'B10:C40', [f'{col}{row}' for row in range(10, 40 + 1) for col in 'BC'], 'Cell out of ref_range'),
-        ('A5:D50', '10:11', [f'{col}{row}' for row in range(10, 11 + 1) for col in 'ABCD'], 'Cell out of ref_range'),
-        ('A5:D50', 'A10:AA11', [f'{col}{row}' for row in range(10, 11 + 1) for col in 'ABCD'], 'Cell out of ref_range'),
-        ('A5:D50', 'C10:AA11', [f'{col}{row}' for row in range(10, 11 + 1) for col in 'CD'], 'Cell out of ref_range'),
-        ('A5:D50', 'B10:C11', [f'{col}{row}' for row in range(10, 11 + 1) for col in 'BC'], 'Cell out of ref_range'),
-    ])
-    def test_cells_in_range_proposal(self, ref_range, excel_slice, answer, msg):
-        assert cells_in_range_proposal(ref_range, excel_slice) == answer, msg 
 
 
 class TestErrorHandling:
