@@ -7,6 +7,7 @@ import re
 from xlpatterns import (
     MIN_COLS, MIN_ROWS, 
     MAX_COLS, MAX_ROWS,
+    ERR_CODE_PREFIX,
     alpha_code, code_alpha,
     cell_pattern, cell_address,
     tbl_pattern, tbl_address,
@@ -101,7 +102,7 @@ class XlErrors(Inmutable, Enum):
     @property
     def code(self):
         id = list(self.__class__._value2member_map_.keys()).index(self.value)
-        return f'Z{id}'
+        return f'{ERR_CODE_PREFIX}{id}'
   
     def __hash__(self):
         return super().__hash__()

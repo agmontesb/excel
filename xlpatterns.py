@@ -1,7 +1,7 @@
 import itertools
 import re
 from typing import Callable
-
+from math import ceil, log
 import pandas as pd
 
 token_specification = [
@@ -17,8 +17,8 @@ token_specification = [
     ('BOOL', r'TRUE|FALSE'),  # Line endings
     ('SHEET', r"'[^']+'!"),  # Sheet names
     ('ERROR', r'#[A-Z/0]+[!?]'), # Error values
-    ('CELL', r'\$?[A-Z]\$?[1-9][0-9]*'),  # Identifiers
-    ('FUNCTION', r'[A-Z]+'),  # Skip over spaces and tabs
+    ('FUNCTION', r'[A-Z0-9\.]+(?=\()'),  # Skip over spaces and tabs
+    ('CELL', r'\$?[A-Z][A-Z]*\$?[1-9][0-9]*'),  # Identifiers
     ('SKIP', r'[ %]+'),  # Skip over spaces and tabs
     ('MISMATCH', r'.'),  # Any other character
 ]
@@ -123,6 +123,8 @@ char_set = ('ABCDEFGHIJKLMOPQRSTUVWXYZ', chr(ord('A') - 1))
 MIN_ROWS = MIN_COLS = 1
 MAX_ROWS = 1_048_576
 MAX_COLS = code_alpha('XFD')
+
+ERR_CODE_PREFIX = ceil(log(MAX_COLS) / log(26)) * 'Z'
 
 
 def interval_regex(pos1: str, pos2: str, ref_set: str = digit_set[0], zero_char: str = digit_set[1], has_pfx: bool = False) -> str:

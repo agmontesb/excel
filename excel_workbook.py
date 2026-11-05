@@ -20,7 +20,8 @@ from xlpatterns import (
     cell_pattern, cell_address,
     rgn_pattern_grp, rgn_pattern,
     tbl_pattern, tbl_address,
-    r1c1rgn_pattern
+    r1c1rgn_pattern,
+    ERR_CODE_PREFIX
 )
 
 logging.basicConfig(level=logging.DEBUG)
@@ -375,6 +376,7 @@ class ExcelCollection(ExcelObject, ABC):
 
             data.append(df)
         return pd.concat(data)
+
 
 class ExcelWorkbook(ExcelCollection):
 
@@ -1278,6 +1280,32 @@ class ExcelTable(ExcelObject):
             self.changed.extend(code_links)
 
     def cells_in_data_rng(self, cells: list[str]) -> list[str]:
+        """
+        Examples:
+
+        wb = ExcelWorkbook('Book')
+        ws = ExcelWorksheet(wb, 'sht1')
+        tbl_range = 'D20:M25'
+        tbl = ExcelTable(ws, 'tbl', tbl_range)
+
+        cells = [*XlRef('E19:F51').cells()]
+        tbl.cells_in_data_rng(cells) == [*XlRef('E20:F25')]
+ 
+        cells = [*XlRef(f"'sht2'!{tbl_range}").cells()]
+        tbl.cells_in_data_rng(cells) == []
+
+        cells  = [*XlRef('E19:F51').cells(), *XlRef(f"'sht2'!{tbl_range}").cells()]
+        tbl.cells_in_data_rng(cells) == [*XlRef('E20:F25')]
+
+        (['d20']) => ['D20'] /=> ValueError()
+        (['D$20']) => ['D20'] /=> ValueError()
+        (['$D20']) => ['D20'] /=> []
+
+        (['D20:Z21']) /=> ['D20:Z21']
+        (['C20:E21']) /=> []
+
+
+        """
         (rmin, cmin),  (rmax, cmax) = map( cell_address, self.data_rng.split(':'))
         ws_name = self.parent.title
         s = pd.Series(cells)
@@ -1452,7 +1480,10 @@ class ExcelTable(ExcelObject):
 
         pyfmls = []
         for frst_item, scnd_item, fml in formulas:
-            pyfml = self.formula_translation(frst_item, scnd_item, fml, feval=feval)
+            try:
+                pyfml = self.formula_translation(frst_item, scnd_item, fml, feval=feval)
+            except Exception as e:
+                pyfml = ''
             pyfmls.extend(pyfml)
 
         return pyfmls
@@ -1463,6 +1494,27 @@ class ExcelTable(ExcelObject):
         :param fml: str. Fórmula de Excel
         :param table_name: str. Nombre de la tabla que contiene la fórmula
         :return: str. Fórmula de Python
+
+        :Examples:
+            ('12', 'D', '=SUM(A1:D20)', feval=True) => [('D12', "xlf.sum(tbl['A1:D20'].values)")]
+            ('12', 'D', '=SUM(A1:D20)', feval=False) => ["D12=xlf.sum(tbl['A1:D20'].values)"]
+            ('12', list('DEFG'), '=SUM(A1:D20)') => ["D12=xlf.sum(tbl['A1:D20'].values)",
+                                                    "E12=xlf.sum(tbl['A1:E20'].values)",
+                                                    "F12=xlf.sum(tbl['A1:F20'].values)",
+                                                    "G12=xlf.sum(tbl['A1:G20'].values)"]
+
+            ('A', ['1', '5', '20'], '=SUM(A1:D20)') => ["A1=xlf.sum(tbl['A1:D20'].values)",
+                                                        "A5=xlf.sum(tbl['A5:D20'].values)",
+                                                        "A20=xlf.sum(tbl['A20:D20'].values)"]
+
+            ('A', ['1', '5', '20'], '=SUM(A11:D20)') /=> ["A1=xlf.sum(tbl['A11:D20'].values)",
+                                                        "A5=xlf.sum(tbl['A55:D20'].values)",
+                                                        "A20=xlf.sum(tbl['A2020:D20'].values)"]
+
+            ('12', list('DEF'), '=SUM(A1:DA20)') /=> ["D12=xlf.sum(tbl['A1:DA20'].values)",
+                                                    "E12=xlf.sum(tbl['A1:EA20'].values)",
+                                                    "F12=xlf.sum(tbl['A1:FA20'].values)"]
+
         '''
 
         match (frst_item, scnd_item, fml):
@@ -1795,10 +1847,10 @@ class ExcelTable(ExcelObject):
         def translate(m, field: Literal['cell', 'code']):
             key = m[0].replace('$', '')
             var = df.loc[key, field]
-            if m[2][-1] != 'Z': # Averiguamos si se tiene un código de error que empiezan por Z
+            if m[2] != ERR_CODE_PREFIX: 
                 return pass_anchors(m[0], var)
             k = int(m[3])
-            return str(list(XlErrors)[k])
+            return list(XlErrors)[k].value
 
         if b_str := isinstance(in_fmls, str):
             in_fmls = pd.Series([in_fmls])
@@ -1811,7 +1863,6 @@ class ExcelTable(ExcelObject):
             in_fmls = pd.Series(in_fmls)
         out_fmls = in_fmls.str.replace(
             cell_pattern,
-            # lambda m: pass_anchors(m[0], df.loc[m[0].replace('$', ''), field]),
             lambda m: translate(m, field),
             regex=True
         )

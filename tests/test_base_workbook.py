@@ -774,22 +774,22 @@ class TestSetRecordsTable:
         ('Outer links, outer parameter', 'sht3_tbl1', 'E3:H8'),
     ])
     def test_table_creation(self, ws_name, tbl_name, tbl_range, base_workbook):
-            sht_tbl = base_workbook[ws_name][tbl_name]
-            base_df = sht_tbl.data.copy()
-            sht_tbl.data = ExcelTable.create_dataframe()
-            fmls, values, tblv = tbl_data(tbl_name, tbl_range)
-            sht_tbl.set_records(fmls, field='fml')
-            sht_tbl.set_records(values, field='value')
-            sht_tbl.recalculate(recalc=True)
-            # Se verifica que se reconstuyen los valores de la tabla
-            df = sht_tbl.data
-            assert (df.loc[tblv.index].value.map(str) == tblv).all()
-            assert (
-                TableComparator(base_df).symmetric_difference(
-                    TableComparator(df),
-                    fields=['res_order', 'value']
-                )
-            ).empty
+        sht_tbl = base_workbook[ws_name][tbl_name]
+        base_df = sht_tbl.data.copy()
+        sht_tbl.data = ExcelTable.create_dataframe()
+        fmls, values, tblv = tbl_data(tbl_name, tbl_range)
+        sht_tbl.set_records(fmls, field='fml')
+        sht_tbl.set_records(values, field='value')
+        sht_tbl.recalculate(recalc=True)
+        # Se verifica que se reconstuyen los valores de la tabla
+        df = sht_tbl.data
+        assert (df.loc[tblv.index].value.map(str) == tblv).all()
+        assert (
+            TableComparator(base_df).symmetric_difference(
+                TableComparator(df),
+                fields=['res_order', 'value']
+            )
+        ).empty
 
 
     @pytest.mark.parametrize("set_up, values, answer", [
