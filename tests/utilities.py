@@ -5,7 +5,7 @@ import openpyxl as px
 from collections.abc import Callable
 from typing import Any
 
-import data
+from tests import data
 from excel_workbook import (
     ExcelTable, ExcelWorkbook, 
     coords_from_range,
@@ -120,6 +120,15 @@ class TableComparator:
                     lambda items: f'{{{str(sorted(items, key=lambda x: TableComparator.sort_key(x)))[1:-1]}}}'
                 )
         return df
+
+
+def unwrapped_fixture(fixture: Callable[..., Any]) -> Callable[..., Any]:
+    """
+    Helper function to get the underlying function of a pytest fixture.
+    """
+    if hasattr(fixture, '__wrapped__'):
+        return fixture.__wrapped__
+    return fixture
 
 
 def exec_time(

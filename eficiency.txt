@@ -1,0 +1,153 @@
+# " Este módulo muestra la eficiencia de las funciones implementadas con "
+# "relación a las funciones que existían o posibles candidatas"
+
+
+    def set_vals(self, values: dict[str, Any], field: Literal['value', 'parameter']='value', recalc:bool=False):
+        """
+        self: ExcelTable
+        Test comparativo con el método set_records() para la asignación de valores en las ExcelTable.
+
+        from excel_workbook import ExcelTable, ExcelWorksheet, ExcelWorkbook
+        from tests.utilities import exec_time
+        wb = ExcelWorkbook('Book')
+        ws1 = ExcelWorksheet(wb, 'sht1')
+        tbl1 = ExcelTable(ws1, 'tbl1', 'A1:M300')
+        ws2 = ExcelWorksheet(wb, 'sht2')
+        tbl2 = ExcelTable(ws2, 'tbl2', 'A1:M300')
+
+        def fnc1(tbl1, tbl2, vals):
+            tbl1.set_records(vals, field='value')
+            tbl1.data = tbl1.create_dataframe()
+            return True
+
+        def fnc2(tbl1, tbl2, vals):
+            tbl2.set_vals(vals, field='value')
+            tbl2.data = tbl2.create_dataframe()
+            return True
+
+        exec_time(fnc1, fnc2, tbl1, tbl2, {'A10': 25, 'B10': 50, 'C10': 75, 'D10': 100, 'E10': 125, 'F10': 150, 'G10': 175, 'H10': 200, 'I10': 225, 'J10': 250, 'K10': 275, 'L10': 300, 'M10': 325})
+
+        fnc1:    45930.30 µs/call
+        fnc2:    33594.44 µs/call
+
+        Conclusión: El método set_vals() es más eficiente que el método set_records() para la 
+        asignación de valores en las ExcelTable.
+        Se debe revisar el método set_records() para mejorar su eficiencia y reducir la 
+        complejidad de su implementación.
+
+        """
+        assert (df := self.data) is not None, 'Table not initialized'
+        keys = list(values.keys() & (set(self.links()) | set(self._cell_rgn(self.data_rng))))
+        if not keys:
+            return
+
+        # New value cells to be initialized
+        if (to_init := list(set(keys) - set(df.index))):
+            value_rec = dict(
+                fml='', dependents=set(), res_order=0, ftype='#', value=EMPTY_CELL, code=''
+            )
+            df = pd.concat(
+                [
+                    df,
+                    pd.DataFrame([value_rec.values()], columns=value_rec.keys(), index=pd.Index(to_init, name='cell'))
+                ]
+            )
+            df.loc[to_init, 'code'] = [f'{self.next_id()}' for _ in range(len(to_init))]
+            self.data = df
+        # Formula cells to be converted to value cells
+        if (to_convert := list(set(keys) & set(df.loc[~df.fml.isna()].index))):
+            # Se eliminan del campo "dependent" de las celdas aguas abajo de las celdas que se van a convertir.
+            fmls = df.loc[to_convert].fml.apply(lambda x: self.encoder('decode', x, df=self.data)).tolist()
+            excel_slice = [term.replace('$', '')  for fml in fmls for term in rgn_pattern.findall(fml)]
+            to_convert_coded = df.loc[to_convert].code.tolist()
+            independents = self._cell_rgn(excel_slice)
+            df.loc[independents, 'dependents'] = (
+                df.loc[independents]
+                .dependents
+                .apply(lambda x: x.difference_update(to_convert_coded))
+            )
+            # Se actualiza el campo "res_order" de las celdas aguas arriba de las celdas a convertir
+
+
+        values = {key: values[key] for key in keys}
+        changed = keys
+        if (parameters:= values.keys() & set(self.parent.parameters()) and field == 'values'):
+            warnings.warn(
+                f"You are modifying this parameter(s): {parameters}. "
+                f"At this level it only modifies the table in which they are set."
+                f"To be valid across the workbook, try at the worksheet level with the function "
+                f"ws.parameters(param1=value1, param2=value2)",
+                UserWarning
+            )
+        if changed or self.changed:
+            self.changed.extend(df.loc[changed].code.tolist())
+            df.loc[changed, 'value'] = pd.Series(values, dtype=TABLE_DATA_MAP['value'])
+        self.recalculate(recalc)
+        pass
+
+def set_fmls(self, fmls: dict[str,str]|None, values:dict[str, Any]|None):
+        """
+        self: ExcelTable
+        Test comparativo con el método set_records() para la asignación de fórmulas en las ExcelTable.
+
+
+        from excel_workbook import ExcelTable, ExcelWorksheet, ExcelWorkbook
+        from tests.utilities import exec_time
+
+        wb = ExcelWorkbook('Book')
+        ws1 = ExcelWorksheet(wb, 'sht1')
+        tbl1 = ExcelTable(ws1, 'tbl1', 'A1:M300')
+        ws2 = ExcelWorksheet(wb, 'sht2')
+        tbl2 = ExcelTable(ws2, 'tbl2', 'A1:M300')
+
+        def fnc1(tbl1, tbl2, fmls):
+            tbl1.set_records(fmls, field='fml')
+            tbl1.data = tbl1.create_dataframe()
+            return True
+
+        def fnc2(tbl1, tbl2, fmls):
+            tbl2.set_fmls(fmls, None)
+            tbl2.data = tbl2.create_dataframe()
+            return True
+
+        exec_time(fnc1, fnc2, tbl1, tbl2, {'A10': '=SUM(B10:C200, Z50)'})
+        fnc1:    55258.43 µs/call
+        fnc2:    31155.16 µs/call
+
+        Conclusión: El método set_fmls() es más eficiente que el método set_records() para la 
+        asignación de fórmulas en las ExcelTable.
+        Se debe revisar el método set_records() para mejorar su eficiencia y reducir la 
+        complejidad de su implementación.
+
+        """
+
+        df = (
+            pd.DataFrame.from_dict(fmls, orient='index', columns=['fml'], dtype=TABLE_DATA_MAP['fml'])
+            .pipe(self.fml_dependents)
+            .pipe(self.res_order)
+            .drop(columns='independents')
+            .pipe(self.formula_type)
+            .assign(value=0)
+            .pipe(self.normalize_data)
+        )
+        self.data = (
+            pd.concat([self.data, df])
+            .sort_index()
+        )
+        self.data.index.rename('cell', inplace=True)
+        self.data.loc[:, ['dependents']] = self.data.dependents.where(~df.dependents.isnull(), set())
+        self.data.loc[:, ['fml']] = self.data.fml.apply(lambda x: x if isinstance(x,str) else '')
+        self.data.loc[:, ['ftype']] = self.data.ftype.apply(lambda x: x if isinstance(x,str) else '#')
+        df = self.data
+        self.parent.register_tbl(self)
+        values = values or {}
+        if links:=self.links():
+            ws = self.parent
+            links, code_links, link_values = ws.register_links(self, links)
+            # Asignación de code para los enlaces (links)
+            old_codes = df.loc[links, 'code'].tolist()
+            changes = dict(zip(old_codes, code_links))
+            self.data = df =self.set_field(changes, field='code', data=self.data)
+            # Asignación de valores para los enlaces (links)
+            df.loc[links, 'value'] = link_values
+            self.changed.extend(code_links)

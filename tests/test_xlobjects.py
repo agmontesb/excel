@@ -22,7 +22,7 @@ class Test_XlRef:
         anchors = f'{xlslice.upper()}:{xlslice.upper()}'.split(':', 2)[:2]
         if all(x.isnumeric() for x in anchors):
             rows = anchors
-            cols = map(alpha_code, (MIN_COLS, MAX_COLS))
+            cols = MIN_COLS, MAX_COLS
         elif all(x.isalpha() for x in anchors):
             rows = map(str, (MIN_ROWS, MAX_ROWS))
             cols = anchors
@@ -132,8 +132,8 @@ class Test_XlRef:
         (3, 3, '$C$6:E7'),
         (-MAX_ROWS, 0, XlErrors.REF_ERROR),
         (MAX_ROWS, 0, XlErrors.REF_ERROR),
-        (0, -MAX_COLS, XlErrors.REF_ERROR),
-        (0, MAX_COLS, XlErrors.REF_ERROR),
+        (0, -code_alpha(MAX_COLS), XlErrors.REF_ERROR),
+        (0, code_alpha(MAX_COLS), XlErrors.REF_ERROR),
     ])
     def test_offset(self, row_off, col_off, answer):
         xlref_base = XlRef('B4:$C$6')

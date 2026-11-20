@@ -186,22 +186,29 @@ class XlRef:
             xlslice = xlslice.replace('$', '')
             tl_ref, br_ref = f'{xlslice}:{xlslice}'.split(':', 2)[:2]
 
-            if all(x.isnumeric() for x in (tl_ref, br_ref)):  # row(s): '5:20', '10'
-                tl_row, br_row = map(int, (tl_ref, br_ref))
-                tl_col, br_col = MIN_COLS, MAX_COLS
-            elif all(x.isalpha() for x in (tl_ref, br_ref)):    # column(s): 'A:C', 'Z'
-                tl_col, br_col = map(code_alpha, (tl_ref, br_ref))
-                tl_row, br_row = MIN_ROWS, MAX_ROWS
-            else:   # general: 'A5', 'D1:Z20'
+            try:
                 (tl_row, tl_col),  (br_row, br_col) = map(cell_address, (tl_ref, br_ref))
-                tl_row, br_row = map(int, (tl_row, br_row))
-                tl_col, br_col = map(code_alpha, (tl_col, br_col))
-            coords = (tl_row, tl_col, br_row, br_col)
+                # tl_row, br_row = map(int, (tl_row, br_row))
+                # tl_col, br_col = map(code_alpha, (tl_col, br_col))
+            except AttributeError:
+                disc = tl_ref + br_ref 
+                if disc.isnumeric():  # row(s): '5:20', '10'
+                    tl_row, br_row = tl_ref, br_ref
+                    tl_col, br_col = MIN_COLS, MAX_COLS
+                elif disc.isalpha():    # column(s): 'A:C', 'Z'
+                    tl_col, br_col = tl_ref, br_ref
+                    tl_row, br_row = str(MIN_ROWS), str(MAX_ROWS)
+                else:
+                    raise ValueError(f"Invalid xlref string: {xlref}")
         elif isinstance(xlref, tuple):
             coords = xlref
-            self.adr = ':'.join(f'{alpha_code(coords[2*k+1])}{coords[2*k]}' for k in range(len(coords)//2))
+            n = len(coords)
             coords = (2*coords)[:4]
-        self.coords = coords
+            tl_row, br_row = map(str, coords[::2])
+            tl_col, br_col = map(alpha_code, coords[1::2])
+            self.adr = ':'.join(f'{y}{x}' for x, y in list(zip((tl_row, br_row), (tl_col, br_col)))[:n//2])
+        coords = (tl_row, tl_col, br_row, br_col)
+        self._coords = list(map('{: >7s}'.format, coords))
 
     def isCell(self) -> bool:
         """
@@ -214,6 +221,18 @@ class XlRef:
         """
         adr = self.adr.replace('$', '')
         return ':' not in adr and not adr.isalpha() and not adr.isnumeric()
+
+    @property
+    def coords(self) -> tuple[int, str, int, str]:
+        """
+        Returns the coordinates of the XlRef object as a tuple.
+
+        Returns:
+            tuple: A tuple containing (top-left row, top-left column, bottom-right row, bottom-right column).   
+        """
+        rows = list(map(int, self._coords[::2]))
+        cols = list(map(code_alpha, self._coords[1::2]))
+        return (rows[0], cols[0], rows[1], cols[1])
 
     def cells(self, column_wise: bool = True) -> Iterator[str]:
         """
@@ -312,12 +331,12 @@ class XlRef:
         for k, cell in enumerate(cells):
             row, col = cell_address(cell)
             if row.isnumeric():
-                if not MIN_ROWS <= (coord := coords[k * 2] + row_offset) <= MAX_ROWS:
+                if not int(MIN_ROWS) <= (coord := coords[k * 2] + row_offset) <= int(MAX_ROWS):
                     return XlErrors.REF_ERROR
                 coords[k * 2] = coord
                 row = str(coords[k * 2])
             if col.isalpha():
-                if not MIN_COLS <= (coord := coords[k * 2 + 1] + col_offset) <= MAX_COLS:
+                if not code_alpha(MIN_COLS) <= (coord := coords[k * 2 + 1] + col_offset) <= code_alpha(MAX_COLS):
                     return XlErrors.REF_ERROR
                 coords[k * 2 + 1] = coord
                 col = alpha_code(coords[k * 2 + 1])
@@ -330,7 +349,10 @@ class XlRef:
         return XlRef(xlref)
 
     def xlslice_corners(self):
-        return f'{self.adr}:{self.adr}'.split(':', 2)[:2]
+        adrs = f'{self.adr}:{self.adr}'.split(':', 2)[:2]
+        prefix = f"'{self.sheet}'!" if self.sheet else ''
+        n = 1 if self.isCell() else 2
+        return tuple(f"{prefix}{adr}" for adr in adrs[:n])
 
     def r1c1_xlref(self, xlref: str | 'XlRef' | None = None) -> str | None:
         """
@@ -372,8 +394,7 @@ class XlRef:
 
             prefix = f"'{xlref.sheet}'!" if xlref.sheet else ''
             xlref_coords = xlref.coords
-            tl_cell, br_cell = xlref.xlslice_corners()
-            cells = (tl_cell, ) if xlref.isCell() else (tl_cell, br_cell)
+            cells = xlref.xlslice_corners()
 
             coords = 2*self.coords[:2]
             pairs = []
@@ -446,11 +467,14 @@ class XlRef:
 
         """
         if isinstance(other, str):
-            other = XlRef(other)
+            if self.isCell():
+                return str(self) == other
+            else:
+                other = XlRef(other)
         if not isinstance(other, XlRef):
             return False
 
-        coord1, coord2 = self.coords, other.coords
+        coord1, coord2 = self._coords, other._coords
         m = 2 if other.isCell() else 4
         bflag = all(coord1[k := n % 2] <= coord2[n] <= coord1[k + 2] for n in range(m))
         return bflag
@@ -476,14 +500,14 @@ class XlRef:
 def main():
 
     xlrefstr = ['F', 'Z:AD', '5', '5:20', 'd50', "'sheet1'!a10:d20", 'a10:D20', 'A10:D20']
-    for refstr in xlrefstr:
+    for refstr in xlrefstr[::-1]:
         print(f'testing {refstr}')
         sheet, xlslice = tbl_address(refstr)
         prefix = f"'{sheet}'!" if sheet else ''
         anchors = f'{xlslice.upper()}:{xlslice.upper()}'.split(':', 2)[:2]
         if all(x.isnumeric() for x in anchors):
             rows = anchors
-            cols = map(alpha_code, (MIN_COLS, MAX_COLS))
+            cols = MIN_COLS, MAX_COLS
         elif all(x.isalpha() for x in anchors):
             rows = map(str, (MIN_ROWS, MAX_ROWS))
             cols = anchors

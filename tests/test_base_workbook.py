@@ -13,8 +13,8 @@ from datetime import date
 from excel_workbook import (
     TABLE_DATA_MAP, ExcelWorkbook, ExcelTable, XlErrors, 
     cell_address, cell_pattern, pythonize_fml, cells_in_range,
-    tbl_address, rgn_pattern,
-    CIRCULAR_REF, link_pattern
+    tbl_address, rgn_pattern, EMPTY_CELL, LINK_PREFIX,
+    CIRCULAR_REF, link_pattern, XlRef
     )
 from utilities import TableComparator, tbl_data
 from fixtures import static_workbook as base_workbook
@@ -23,6 +23,14 @@ import xlfunctions as xlf
 
 class TestKnownBugs:
 
+    #
+    # links: El código de un link se forma agregando el LINK_PREFIX (actualmenente 'Z') al cell coord, 
+    # ej: si en la hoja 'sheet1' la celda 'G2' es un enlace, entonces el código sería "'sheet1'!ZG2".
+    # Esto representa un problema cuando se tiene una hoja con rango de celdas pr lo menos de A1:ZZ0 ya 
+    # que algunos códigos de celdas podrían interpretarse como códigos de enlace.
+    #
+
+    
     @pytest.mark.xfail(reason="Bug: Cuando al momento de introducir una fórmula que hace referencia a una celda(s) en una tabla o hoja de cálculo que todavía no se ha creado, se produce un error que termina en un crash.")
     def test_bug002_formulas_with_non_existing_links(self):
         """
@@ -61,7 +69,45 @@ class TestKnownBugs:
 
         pass
 
-    # next bug = 4
+    @pytest.mark.xfail(reason="Bug: No se crean los registros de celda " \
+    "en 'Sht2' cuando se introduce una fórmula en 'Sht1' que hace referencia a celdas en 'Sht2'.")
+    def test_bug004_links():
+        wb = ExcelWorkbook('MyBook')
+        sht1 = wb.create_worksheet('Sht1')
+        tbl1 = sht1.create_table('tbl1', 'A1:P100')
+        sht2 = wb.create_worksheet('Sht2')
+        tbl2 = sht2.create_table('tbl2', 'A1:P100')
+
+        tbl1.set_formulas({'A1': "=SUM('Sht2'!A1:A10)"})
+
+    @pytest.mark.xfail(reason="Bug: En el sheet.delete method, no se borran los parámetros " \
+    "cuando pertenecen a las celdas a 'delete'")
+    def test_bug005_delete_links(base_workbook):
+        ws_name = 'Parameters and inner links'
+        ws = base_workbook[ws_name]
+        xlref = XlRef('G')
+
+        ws_params1 = [param for param in ws.parameters() if param in xlref]
+
+        assert ws_params1 == ['G2']
+
+        links1 = {tbl.title: set([lnk for lnk in lnks if lnk in xlref]) for tbl in ws.tables if (lnks:=tbl.links())}
+
+        ws.delete(str(xlref))
+
+        ws_params2 = [param for param in ws.parameters() if param in xlref]
+        assert ws_params1 == ws_params2, "Sigue apareciendo 'G2' a pesar que se borró la columna donde se encuentra"
+
+        links2 = {tbl.title: set([lnk for lnk in lnks if lnk in xlref]) for tbl in ws.tables if (lnks:=tbl.links())}
+
+        assert links1 == links2, "Siguen apareciendo los parametros que debieron desaparecer"
+
+        
+
+
+    
+
+    # next bug = 5
 
 
 class TestSolvedBugs:
@@ -278,7 +324,7 @@ class TestBaseWorkbook:
         assert table.id == 'A'
 
         assert table.data_rng == 'F3:I9'
-        assert table.needUpdate is False
+        assert table.recalc is False
         assert table.changed == []
 
         assert table.parent.index(table) == 0
@@ -287,7 +333,7 @@ class TestBaseWorkbook:
     def test_ws_parameters(self, base_workbook):
         ws = base_workbook['Parameters and inner links']
         assert ws.parameters() == ['G2']
-        assert ws.parameters('G2') == [0]
+        assert ws.parameters('G2') == [EMPTY_CELL]
 
         associated_tables = ws.associated_table('G2', scope='parameter')
         assert sorted(tbl.title for tbl in associated_tables) == ['sht2_tbl2', 'sht3_tbl1']

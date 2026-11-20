@@ -46,7 +46,7 @@ def alpha_code(id, nbase=26):
     return ''.join(answ[::-1])
 
 def code_alpha(code: str, nbase:int = 26) -> int:
-    return sum((ord(c) - ord('A') + 1) * (nbase ** i) for i, c in enumerate(reversed(code)))
+    return sum((ord(c) - ord('A') + 1) * (nbase ** i) for i, c in enumerate(reversed(code.strip())))
 
 def offset_rng(cells: str | list[str], col_offset: int = 0, row_offset: int = 0,
                disc_cell: str | None = None, tbl: str | None = None) -> str | dict[str, str]:
@@ -120,11 +120,11 @@ def offset_rng(cells: str | list[str], col_offset: int = 0, row_offset: int = 0,
 digit_set = ('0123456789', '0')
 char_set = ('ABCDEFGHIJKLMOPQRSTUVWXYZ', chr(ord('A') - 1))
 
-MIN_ROWS = MIN_COLS = 1
-MAX_ROWS = 1_048_576
-MAX_COLS = code_alpha('XFD')
+MIN_ROWS, MAX_ROWS = 1, 1_048_576
+MIN_COLS, MAX_COLS = 'A', 'XFD'
 
-ERR_CODE_PREFIX = ceil(log(MAX_COLS) / log(26)) * 'Z'
+LINK_PREFIX = 'Z'
+ERR_CODE_PREFIX = ceil(log(code_alpha(MAX_COLS)) / log(26)) * LINK_PREFIX
 
 
 def interval_regex(pos1: str, pos2: str, ref_set: str = digit_set[0], zero_char: str = digit_set[1], has_pfx: bool = False) -> str:

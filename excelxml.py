@@ -633,7 +633,7 @@ class OXLLoader:
     def plain_data(
         cls,
         data: dict[str, str],
-        field: Literal["fml", "values"] = "fml",
+        field: Literal["fml", "value", "parameter"] = "fml",
     ) -> dict[str, str]:
         """Expand cell and range references into a mapping of individual cells.
 
