@@ -28,7 +28,7 @@ link_pattern = re.compile(r"((?:'(?:.+?)'!)+(?:\$?[A-Z])+(?:\$?[0-9])+)")
 cell_pattern = re.compile(r"(?:'(?P<sht>.+?)'!)*(?P<col>\$?[A-Z]+)(?P<row>\$?[0-9]+)")
 cell_address:Callable[[str], tuple[str, ...]] = lambda cell: tuple(x for x in cell_pattern.search(cell).groups()[::-1] if x)
 rgn_pattern_grp = re.compile("(?:'(?P<sht>.+?)'!)*(?P<col>\\$?[A-Z]+)(?P<row>\\$?[0-9]+)(?::\\$?[A-Z]\\$?[0-9]+)?")
-rgn_pattern = re.compile(r"(?:'.+?'!)*\$?[A-Z]\$?[0-9]+(?::\$?[A-Z]\$?[0-9]+)?")
+rgn_pattern = re.compile(r"(?:'.+?'!)*\$?[A-Z]+\$?[0-9]+(?::\$?[A-Z]\$?[0-9]+)?")
 tbl_pattern = re.compile(r"(?:'(?P<sht>.+?)'!)*(?P<cell>.+)")
 tbl_address = lambda tbl: tbl_pattern.match(tbl).groups()
 

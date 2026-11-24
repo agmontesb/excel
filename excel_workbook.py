@@ -878,15 +878,21 @@ class ExcelWorksheet(ExcelCollection):
             try:
                 code, value = tbl.data.loc[cell_coord, ['code', 'value']]
             except AttributeError:
+                # tbl es None, lo que significa que 'cell' no tiene una tabla asociada.
                 pvalue = default_value
                 value = sheet._param_map.setdefault(cell_coord, pvalue)
                 code = LINK_PREFIX + cell_coord
+            except KeyError:
+                # tbl existe, pero no hay record asociado con ella, es decir 
+                # no tiene un valor o no a sido referenciada anteriormente por 
+                # lo que no se le a asignado un 'code'. Se filtra,
+                continue
             code = f"'{sheet.id}'!{code}"
             cell = f"'{sheet.title}'!{cell_coord}" if sheet.id != self.id else cell_coord
             answ.append((cell, code, value))
             links[code].add(f"'{self.id}'!{xtable.id}")
 
-        cells, code_links, values = map(list, zip(*answ))
+        cells, code_links, values = map(list, zip(*answ)) if answ else ([], [], [])
         return cells, code_links, values
     
     def parameter_code(self, param_name:str) -> str:
@@ -1062,7 +1068,11 @@ class ExcelTable(ExcelObject):
 
         values = excelxml.OXLLoader.plain_data(values, field=field)
             
-        keys = tbl.cells_in_data_rng(values.keys()) if field != 'parameter' else list(values.keys())
+        # keys = tbl.cells_in_data_rng(values.keys()) if field != 'parameter' else list(values.keys())
+        keys = tbl.cells_in_data_rng(values.keys())
+        lnks = list(set(tbl.links()) & values.keys())  # Enlaces externos o parámetros
+        assert not lnks or field != 'fml', 'No se pueden asignar fórmulas a enlaces (parámetros o enlaces entre tablas)'
+        keys += lnks
         if not keys:
             return
 
@@ -1105,11 +1115,22 @@ class ExcelTable(ExcelObject):
                 if links:
                     ws = tbl.parent
                     cell_links, code_links, value_links = ws.register_links(tbl, links, default_value=EMPTY_CELL)
-                    # ref_cells: Records que existen para asegurar el código de una celda, no están enlazadas.
-                    ref_cells = [cell for cell, value in zip(cell_links, value_links) if value == EMPTY_CELL]
-                    df = tbl.add_empty_cells(ref_cells, data=df, ftype='?')
-                    true_cells = list(set(cell_links) - set(ref_cells))  # Records de celdas que existen
-                    df = tbl.add_empty_cells(true_cells, data=df)
+                    ref_cells = set(links) - set(cell_links)
+                    if ref_cells:
+                        # ref_cells: Records que existen para asegurar el código de una celda, no están enlazadas.
+                        to_process = {}
+                        wb = ws.parent
+                        for cell in ref_cells:
+                            sht_name, cell = tbl_address(cell)
+                            atbl = wb[sht_name].associated_table(cell)
+                            to_process.setdefault(atbl, []).append(cell)
+                        for atbl, cells in to_process.items():
+                            atbl.add_empty_cells(cells, ftype='?')
+                        ref_cell, ref_code, ref_value = ws.register_links(tbl, links, default_value=EMPTY_CELL)
+                        cell_links.extend(ref_cell)
+                        code_links.extend(ref_code)
+                        value_links.extend(ref_value)
+                    df = tbl.add_empty_cells(cell_links, data=df)
                     df.loc[cell_links, ['code', 'value']] = list(zip(code_links, value_links))
 
             # Se agregan a los dependents de las variables independientes de las fórmulas el 
@@ -1355,8 +1376,9 @@ class ExcelTable(ExcelObject):
         mask = (db.sht == f'{ws_name}') & db.row.astype(int).between(int(rmin), int(rmax)) & db.col.between(cmin, cmax)
         if not mask.any():
             return []
-        answ = pd.Series(cells, index=mask).loc[True]
-        return [answ] if len(cells) == 1 else answ.tolist()
+        mask = mask.to_list()
+        answ = [cell for cell, bflag in zip(cells, mask) if bflag]
+        return answ
     
     def links(self):
         """
@@ -1377,12 +1399,45 @@ class ExcelTable(ExcelObject):
         ws._objects.pop(ndx)
 
     @staticmethod
-    def set_field(changes: dict[str, Any], *, field: Literal['code', 'cell']= 'code', with_dependents: bool = True, data=None):
+    def set_field_old(changes: dict[str, Any], *, field: Literal['code', 'cell']= 'code', with_dependents: bool = True, data=None):
         """
         Update the specified field ('code' or 'cell') in the provided DataFrame based on the given changes.
+        The Dataframe is assumed to has at least the columns 'fml' y 'code' and an index of 'cell'. 
+        The formulas ('fml') is assumed to be coded.
         changes: A dictionary where keys are the original values and values are the new values to set.
         field: The field to update ('code' for codes, 'cell' for cell addresses).
         with_dependents: A boolean indicating whether to also update dependents when updating codes.
+
+        Examples:
+        wb = ExcelWorkbook('MyBook')
+        sht1 = wb.create_worksheet('Sht1')
+        tbl1 = sht1.create_table('tbl1', 'A1:P100')
+        sht2 = wb.create_worksheet('Sht2')
+        tbl2 = sht2.create_table('tbl2', 'A1:P100')
+
+        tbl1.set_formulas({'A1': "='Sht2'!A1 + 'Sht2'!A10"}, recalc=True)
+        tbl2.set_values({'A10':20}, recalc=True)
+
+        assert tbl2.data.loc['A10'].value == 20
+        assert tbl1.data.loc['A1'].fml == "='sheet2'!A2 + 'sheet2'!A1"
+        assert tbl1.data.loc['A1'].value == 20
+
+
+        **** To decode the 'fml' field:
+        df = tbl1.data
+        eqv_tbl = dict(zip(df.code, df.index))
+        new_df = ExcelTable.set_field(eqv_tbl, field='code', data=df, with_dependents=False)
+
+        assert new_df.loc['A1'].fml == "='Sht2'!A1 + 'Sht2'!A10"
+        assert all(new_df.index == new_df.code.tolist())
+
+        **** To encode the 'fml' field:
+        eqv_tbl = df.code.to_dict()
+        new_df = ExcelTable.set_field(eqv_tbl, field='code', data=df, with_dependents=False)
+
+        assert new_df.loc['A1'].fml == df.loc['A1'].fml
+        assert (new_df.code == df.code).all()
+
         """
         assert isinstance(data, pd.DataFrame)
         df = data
@@ -1422,6 +1477,77 @@ class ExcelTable(ExcelObject):
                 df.loc[mask, 'dependents'] = df.loc[mask].dependents.apply(fnc)
         else:  # field == 'cell'
             mask = df.code.isin(changes.keys())
+
+            keys = df.loc[mask, 'code'].apply(changes.get)
+            df.rename(index=keys, inplace=True)
+        return df
+
+    @staticmethod
+    def set_field(changes: dict[str, Any], *, field: Literal['code', 'cell']= 'code', with_dependents: bool = True, data=None):
+        """
+        Update the specified field ('code' or 'cell') in the provided DataFrame based on the given changes.
+        The Dataframe is assumed to has at least the columns 'fml' y 'code' and an index of 'cell'. 
+        The formulas ('fml') is assumed to be coded.
+        changes: A dictionary where keys are the original values and values are the new values to set.
+        field: The field to update ('code' for codes, 'cell' for cell addresses).
+        with_dependents: A boolean indicating whether to also update dependents when updating codes.
+
+        Examples:
+        wb = ExcelWorkbook('MyBook')
+        sht1 = wb.create_worksheet('Sht1')
+        tbl1 = sht1.create_table('tbl1', 'A1:P100')
+        sht2 = wb.create_worksheet('Sht2')
+        tbl2 = sht2.create_table('tbl2', 'A1:P100')
+
+        tbl1.set_formulas({'A1': "='Sht2'!A1 + 'Sht2'!A10"}, recalc=True)
+        tbl2.set_values({'A10':20}, recalc=True)
+
+        assert tbl2.data.loc['A10'].value == 20
+        assert tbl1.data.loc['A1'].fml == "='sheet2'!A2 + 'sheet2'!A1"
+        assert tbl1.data.loc['A1'].value == 20
+
+
+        **** To decode the 'fml' field:
+        df = tbl1.data
+        eqv_tbl = dict(zip(df.code, df.index))
+        new_df = ExcelTable.set_field(eqv_tbl, field='code', data=df, with_dependents=False)
+
+        assert new_df.loc['A1'].fml == "='Sht2'!A1 + 'Sht2'!A10"
+        assert all(new_df.index == new_df.code.tolist())
+
+        **** To encode the 'fml' field:
+        eqv_tbl = df.code.to_dict()
+        new_df = ExcelTable.set_field(eqv_tbl, field='code', data=df, with_dependents=False)
+
+        assert new_df.loc['A1'].fml == df.loc['A1'].fml
+        assert (new_df.code == df.code).all()
+
+        """
+        assert isinstance(data, pd.DataFrame)
+        df = data
+        if field == 'code':
+            if not (gmask := df.code.isin(list(changes.keys()))).any():
+                return df
+            direct_desc = set(df.loc[gmask].code)
+            if with_dependents:
+                direct_desc |= flatten_sets(df.loc[gmask].dependents)
+            mask = df.code.isin(direct_desc)
+
+            # Modificación  fml field
+            mod_fmls = [(ndx, ExcelTable.translate_fml(fml, changes)) for ndx, fml in df[mask].fml.to_dict().items()]
+            ndx, fmls = zip(*mod_fmls)
+            df.loc[ndx, 'fml'] = fmls
+
+            # Modificación de códigos
+            df.loc[gmask, 'code'] = [changes[key] for key in df.loc[gmask].code]
+
+            if with_dependents and (mask := df.dependents.apply(lambda x: bool(x & changes.keys()))).any():
+                # Modificación de dependdents
+                fnc = lambda x: set(changes.get(y, y) for y in x)
+                df.loc[mask, 'dependents'] = df.loc[mask].dependents.apply(fnc)
+        else:  # field == 'cell'
+            mask = df.code.isin(changes.keys())
+
             keys = df.loc[mask, 'code'].apply(changes.get)
             df.rename(index=keys, inplace=True)
         return df
@@ -1803,7 +1929,7 @@ class ExcelTable(ExcelObject):
                 tbl.data.loc[vals.index, 'value'] = vals
 
             ws = tbl.parent
-            values = dict((f"'{ws.id}'!{key}", value) for key, value in values.items())
+            values = dict((f"'{ws.id}'!{key}", value) for key, value in values.items() if '!' not in key)
             ws.broadcast_changes(values, field='value')
 
     def fml_dependents(self, df):
@@ -1892,27 +2018,30 @@ class ExcelTable(ExcelObject):
         # order0_map
 
         # pairs, dependency_map
+        try:
+            term_dep, term_ind = zip(*pairs)
+        except ValueError as e:
+            res_order = []
+        else:
+            res_order = [set(term_ind) - set(term_dep)]
+            counter = collections.Counter(term_dep)
+            while pairs:
+                # print(f'For process={len(pairs)}')
+                to_batch = [
+                    (term, dep)
+                    for term, dep in pairs
+                    if dep in res_order[-1]
+                ]
+                counter.subtract([
+                    term
+                    for term, dep in to_batch
+                    if not pairs.remove((term, dep))
+                ])
+                to_batch = {term for term in counter.keys() if counter[term] == 0}
+                [counter.pop(term) for term in to_batch]
+                res_order.append(to_batch)
 
-        term_dep, term_ind = zip(*pairs)
-        res_order = [set(term_ind) - set(term_dep)]
-        counter = collections.Counter(term_dep)
-        while pairs:
-            # print(f'For process={len(pairs)}')
-            to_batch = [
-                (term, dep)
-                for term, dep in pairs
-                if dep in res_order[-1]
-            ]
-            counter.subtract([
-                term
-                for term, dep in to_batch
-                if not pairs.remove((term, dep))
-            ])
-            to_batch = {term for term in counter.keys() if counter[term] == 0}
-            [counter.pop(term) for term in to_batch]
-            res_order.append(to_batch)
-
-        assert not (set(res_order[0]) - order0_map.keys()), 'The first batch of formulas does not contain all the formulas'
+        assert not res_order or not (set(res_order[0]) - order0_map.keys()), 'The first batch of formulas does not contain all the formulas'
         order_map = order0_map.copy()
         # mask = []
         for batch in res_order[1:]:
@@ -1958,6 +2087,39 @@ class ExcelTable(ExcelObject):
         )
 
     @classmethod
+    def translate_fml(cls, fml: str, equiv_table: dict[str, str]):
+        xlrefs = rgn_pattern.findall(fml)
+        if not xlrefs:
+            return fml
+        fml_fmt = rgn_pattern.sub(lambda m: '{}', fml.replace('{', '{{').replace('}', '}}'))
+        mod_xlrefs = []
+        for xlref in xlrefs:
+            sht, rng = tbl_address(xlref)
+            prefix = f"'{sht}'!" if sht else ''
+            bflag = ':' in rng
+            cells = tuple(f'{prefix}{cell}' for cell in rng.split(':'))
+            codes = []
+            for cell in cells:
+                key = cell.replace('$', '')
+                code = equiv_table.get(key, key)
+                # Se decide no identificar códigos de error y omitir el pas_anchors 
+                # para esos casos para permitir que se pueda reconstruir la fórmula inicial
+                # que incluye (de existir) anchor
+                # sht, col, row = cell_pattern.match(code).groups()
+                # if col != LINK_PREFIX + ERR_CODE_PREFIX: 
+                #     code = pass_anchors(cell, code)
+                # else:
+                #     k = int(row)
+                #     code = list(XlErrors)[k].value
+                code = pass_anchors(cell, code)
+                codes.append(code)
+            if bflag:
+                codes[-1] = codes[-1].split('!')[-1]
+            mod_xlrefs.append(':'.join(codes))
+        return fml_fmt.format(*mod_xlrefs)
+
+
+    @classmethod
     def encoder(cls, action: Literal['decode', 'encode'], in_fmls: str | Sequence[str] | pd.Series, df: pd.DataFrame) -> pd.Series:
         """
         Encode or decode formulas in the provided DataFrame based on the specified action.
@@ -1966,28 +2128,18 @@ class ExcelTable(ExcelObject):
         df: DataFrame containing the formulas and their dependencies.
         Returns: A pandas Series with the encoded or decoded formulas.
         """
-        def translate(m, field: Literal['cell', 'code']):
-            key = m[0].replace('$', '')
-            var = df.loc[key, field]
-            if m[2] != LINK_PREFIX + ERR_CODE_PREFIX: 
-                return pass_anchors(m[0], var)
-            k = int(m[3])
-            return list(XlErrors)[k].value
 
         if b_str := isinstance(in_fmls, str):
             in_fmls = pd.Series([in_fmls])
         if action == 'decode':
-            df = df.reset_index().set_index('code')
-            field = 'cell'
+            equiv_table = dict(zip(df.code, df.index)) if df.index.name == 'cell' else df.cell.to_dict()
         else:
-            field = 'code'
+            equiv_table = df.code.to_dict()
         if (b_lst := isinstance(in_fmls, Sequence)):
             in_fmls = pd.Series(in_fmls)
-        out_fmls = in_fmls.str.replace(
-            cell_pattern,
-            lambda m: translate(m, field),
-            regex=True
-        )
+
+        out_fmls = in_fmls.apply(lambda fml: cls.translate_fml(fml, equiv_table))
+        
         if b_lst:
             out_fmls = out_fmls.tolist()
         return out_fmls.iloc[0] if b_str else out_fmls
@@ -2142,6 +2294,39 @@ class ExcelTable(ExcelObject):
         )
         return fmls
 
+    def cells(tbl, row_slice, col_slice):
+        row_slice, col_slice = map(str, (row_slice, col_slice))
+        assert row_slice.replace(':', '').isnumeric(), "row_slice must be in the form # or #:#"
+        rmin, rmax = f'{row_slice}:{row_slice}'.split(':')[-2:]
+        dmy = col_slice.replace(':', '')
+        assert dmy.isnumeric() or dmy.isalpha(), "col_slice must be in the forms # , #:#, A, A#A"
+        col_slice = col_slice.upper()
+        cmin, cmax = f'{col_slice}:{col_slice}'.split(':')[-2:]
+        if dmy.isnumeric():
+            cmin, cmax = map(alpha_code, (cmin, cmax))
+        excel_slice = f'{cmin}{rmin}:{cmax}{rmax}'
+
+        df = tbl.data
+        cell_rgn = set(tbl._cell_rgn(excel_slice))
+        value_cells = set(cell_rgn) & set(df.index)
+        empty_cells =list(cell_rgn - value_cells)
+        value_cells = list(value_cells)
+        # ['address', 'formula_', 'value', 'style', 'span']
+        #(changes: dict[str, Any], *, field: Literal['code', 'cell']= 'code', with_dependents: bool = True, data=None):
+        changes = dict(zip(df.code, df.index))
+        records = (
+            tbl.set_field(changes, field='code', with_dependents=False, data=df.loc[value_cells, ['fml', 'value', 'code']])
+            .drop(columns=['code'])
+        ).values
+        answ = {}
+        [
+            answ.__setitem__(key, excelxml.Cell(key, *record))
+            for key, record in zip(value_cells, records)
+        ]
+        if len(answ) == 1:
+            answ = list(answ.values())[0]
+        return answ
+
     def __getitem__(self, excel_slice: str|list[str]) -> pd.DataFrame:
         """
         Retrieve the data for the specified Excel slice.
@@ -2149,8 +2334,6 @@ class ExcelTable(ExcelObject):
         Returns: A pandas DataFrame with the data for the specified slice.
         """
         cell_rgn = self._cell_rgn(excel_slice)
-        # ws = self.parent
-        # cell_rgn = cells_in_range(f"'{ws.title}'!{ws.data_rng}", excel_slice)
         value_cells = list(set(cell_rgn) & set(self.data.index))
         empty_cells =list(set(cell_rgn) - set(value_cells))
         data = pd.concat([

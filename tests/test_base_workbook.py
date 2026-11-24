@@ -29,85 +29,8 @@ class TestKnownBugs:
     # Esto representa un problema cuando se tiene una hoja con rango de celdas pr lo menos de A1:ZZ0 ya 
     # que algunos códigos de celdas podrían interpretarse como códigos de enlace.
     #
-
-    
-    @pytest.mark.xfail(reason="Bug: Cuando al momento de introducir una fórmula que hace referencia a una celda(s) en una tabla o hoja de cálculo que todavía no se ha creado, se produce un error que termina en un crash.")
-    def test_bug002_formulas_with_non_existing_links(self):
-        """
-        Bug: Cuando al momento de introducir una fórmula que hace referencia a una celda(s) en 
-        una tabla o hoja de cálculo que todavía no se ha creado, se produce un error que termina 
-        en un crash.
-        """
-        wb = ExcelWorkbook('excel_module_test')
-        ws = wb.create_worksheet('sheet1')
-        tbl = ws.create_table('tbl1', 'A1:C1000')
-        tbl.set_records(dict(A1=5), field='value')
-        try:
-            tbl.set_records(dict(A2="=1 + A1 + 'sheet2'!A2"), field='fml')
-        except Exception as e:
-            pytest.fail(f"Failed to set formula in A2: {e}")
-        pass
-
-    @pytest.mark.xfail(reason="Bug: No se pueden introducir registros en un rango de celdas de una tabla, por ejemplo, A1:C1000 con valor 20 o A3:A5 con fórmula '=SUM(B3:B5)'.")
-    def test_bug003_rango_records(self):
-        """
-        Bug: No se pueden introducir registros en un rango de celdas de una tabla, 
-        por ejemplo, A1:C1000 con valor 20 o A3:A5 con fórmula '=SUM(B3:B5)'. 
-        """
-        wb = ExcelWorkbook('excel_module_test')
-        ws = wb.create_worksheet('sheet1')
-        tbl = ws.create_table('tbl1', 'A1:C1000')
-        try:
-            tbl.set_records({'A2:A10':25}, field='value')
-        except KeyError as e:
-            pytest.fail(f"Failed to set records in range A2:A10: {e}")
-
-        try:
-            tbl.set_records({'A2:A10':'=SUM(B2:B10)'}, field='fml')
-        except KeyError as e:
-            pytest.fail(f"Failed to set records in range A2:A10: {e}")
-
-        pass
-
-    @pytest.mark.xfail(reason="Bug: No se crean los registros de celda " \
-    "en 'Sht2' cuando se introduce una fórmula en 'Sht1' que hace referencia a celdas en 'Sht2'.")
-    def test_bug004_links():
-        wb = ExcelWorkbook('MyBook')
-        sht1 = wb.create_worksheet('Sht1')
-        tbl1 = sht1.create_table('tbl1', 'A1:P100')
-        sht2 = wb.create_worksheet('Sht2')
-        tbl2 = sht2.create_table('tbl2', 'A1:P100')
-
-        tbl1.set_formulas({'A1': "=SUM('Sht2'!A1:A10)"})
-
-    @pytest.mark.xfail(reason="Bug: En el sheet.delete method, no se borran los parámetros " \
-    "cuando pertenecen a las celdas a 'delete'")
-    def test_bug005_delete_links(base_workbook):
-        ws_name = 'Parameters and inner links'
-        ws = base_workbook[ws_name]
-        xlref = XlRef('G')
-
-        ws_params1 = [param for param in ws.parameters() if param in xlref]
-
-        assert ws_params1 == ['G2']
-
-        links1 = {tbl.title: set([lnk for lnk in lnks if lnk in xlref]) for tbl in ws.tables if (lnks:=tbl.links())}
-
-        ws.delete(str(xlref))
-
-        ws_params2 = [param for param in ws.parameters() if param in xlref]
-        assert ws_params1 == ws_params2, "Sigue apareciendo 'G2' a pesar que se borró la columna donde se encuentra"
-
-        links2 = {tbl.title: set([lnk for lnk in lnks if lnk in xlref]) for tbl in ws.tables if (lnks:=tbl.links())}
-
-        assert links1 == links2, "Siguen apareciendo los parametros que debieron desaparecer"
-
-        
-
-
-    
-
-    # next bug = 5
+    pass
+    # next bug = 7
 
 
 class TestSolvedBugs:
@@ -134,6 +57,99 @@ class TestSolvedBugs:
         tbl.recalculate(recalc=True)
         pass
 
+    def test_bug005_delete_links(self, base_workbook):
+        """
+        reason="Bug: En el sheet.delete method, no se borran los parámetros " \
+                    "cuando pertenecen a las celdas a 'delete'"
+        """
+        bSolved = True
+
+        ws_name = 'Parameters and inner links'
+        ws = base_workbook[ws_name]
+        xlref = XlRef('G')
+
+        ws_params1 = [param for param in ws.parameters() if param in xlref]
+        assert ws_params1 == ['G2']
+        tbls = set(sum((ws.associated_table(param, scope='parameter') for param in ws_params1), []))
+        links1 = {tbl.title: set([lnk for lnk in lnks if lnk.split('!')[-1] in ws_params1]) for tbl in tbls if (lnks:=tbl.links())}
+
+        ws.delete(str(xlref))
+
+        ws_params2 = [param for param in ws.parameters() if param in xlref]
+        assert bSolved and ws_params2 == [], "Sigue apareciendo 'G2' a pesar que se borró la columna donde se encuentra"
+
+
+        links2 = {tbl.title: set([lnk for lnk in lnks if lnk.split('!')[-1] in ws_params1]) for tbl in tbls if (lnks:=tbl.links())}
+
+
+        assert bSolved and all(links2[key] == set() for key in links1), "Siguen apareciendo los parametros que debieron desaparecer"
+
+    def test_bug004_links(self):
+        """
+        @pytest.mark.xfail(reason="Bug: No se crean los registros de celda " \
+        "en 'Sht2' cuando se introduce una fórmula en 'Sht1' que hace referencia a celdas en 'Sht2'.")
+        """
+        bSolved = True
+        
+        wb = ExcelWorkbook('MyBook')
+        sht1 = wb.create_worksheet('Sht1')
+        tbl1 = sht1.create_table('tbl1', 'A1:P100')
+        sht2 = wb.create_worksheet('Sht2')
+        tbl2 = sht2.create_table('tbl2', 'A1:P100')
+
+        try:
+            tbl1.set_formulas({'A1': "='Sht2'!A1 + 'Sht2'!A10"}, recalc=True)
+        except Exception as e:
+            pytest.fail(f"Failed to set formula in A1: {e}")
+
+        assert set(tbl1.links()) == {"'Sht2'!A10", "'Sht2'!A1"}
+        assert tbl2.links() == []
+
+        tbl2.set_values({'A10':20}, recalc=True)
+        assert tbl2.cells(10, 'A').value == 20
+        assert tbl1.cells(1, 'A').formula == "='Sht2'!A1 + 'Sht2'!A10"
+        assert tbl1.cells(1, 'A').value == 20
+
+    def test_bug003_rango_records(self):
+        """
+        @pytest.mark.xfail(reason=
+        Bug: No se pueden introducir registros en un rango de celdas de una tabla, 
+        por ejemplo, A1:C1000 con valor 20 o A3:A5 con fórmula '=SUM(B3:B5)'. 
+        )
+        """
+        bSolved = True
+        wb = ExcelWorkbook('excel_module_test')
+        ws = wb.create_worksheet('sheet1')
+        tbl = ws.create_table('tbl1', 'A1:C1000')
+        try:
+            tbl.set_records({'A2:A10':25}, field='value')
+        except KeyError as e:
+            pytest.fail(f"Failed to set records in range A2:A10: {e}")
+
+        try:
+            tbl.set_records({'A2:A10':'=SUM(B2:B10)'}, field='fml')
+        except KeyError as e:
+            pytest.fail(f"Failed to set records in range A2:A10: {e}")
+
+        pass
+
+    def test_bug006_no_valid_formula(self):
+        """
+        @pytest.mark.xfail(reason="Bug: No se pueden introducir fórmulas con errores.")
+        """
+        bSolved = True
+        
+        wb = ExcelWorkbook('MyBook')
+        sht1 = wb.create_worksheet('Sht1')
+        tbl1 = sht1.create_table('tbl1', 'A1:P100')
+
+        try:
+            tbl1.set_formulas({'A2': '=mio(23)'}, recalc=True)
+        except Exception as e:
+            pytest.fail(f"Failed to set formula in cell A2: {e}")
+
+        assert not bSolved or tbl1.cells(2, 'A').formula == '=mio(23)'
+        assert not bSolved or tbl1.cells(2, 'A').value == XlErrors.NAME_ERROR
 
 
 class TestXlFunctions:
@@ -280,6 +296,24 @@ class TestXlFunctions:
     def test_text_functions(self, func_name, data, answer, base_workbook):
         self.basic_testing(func_name, data, answer, base_workbook)
 
+    def test_bug002_formulas_with_non_existing_links(self):
+        """
+        @pytest.mark.xfail(reason=
+        Bug: Cuando al momento de introducir una fórmula que hace referencia a una celda(s) en 
+        una tabla o hoja de cálculo que todavía no se ha creado, se produce un error que termina 
+        en un crash.
+        )
+        """
+        bSolved = True
+        wb = ExcelWorkbook('excel_module_test')
+        ws = wb.create_worksheet('sheet1')
+        tbl = ws.create_table('tbl1', 'A1:C1000')
+        tbl.set_records(dict(A1=5), field='value')
+        try:
+            tbl.set_records(dict(A2="=1 + A1 + 'sheet2'!A2"), field='fml')
+        except Exception as e:
+            pytest.fail(f"Failed to set formula in A2: {e}")
+        pass
 
 class TestBaseWorkbook:
 
@@ -374,6 +408,32 @@ class TestBaseWorkbook:
 
 
 class TestHelperMethods:
+
+    def test_set_field(self, base_workbook):
+        tbl = base_workbook['#sheet2']['#B']
+        df = tbl.data.copy()
+
+        # Recodificación campo 'code' cambiando la letra del code de 'B' a 'D'
+        changes = {code: code.replace('B', 'D') for code  in df.code}
+        ExcelTable.set_field(changes, field='code', with_dependents=True, data=df)
+
+        # Expresar las fórmulas y dependents en términos del campo 'cell' (df.index)
+        changes = dict(zip(df.code, df.index))
+        ExcelTable.set_field(changes, field='code', with_dependents=True, data=df)
+
+        # Volvemos a la df inicial al expresar las fórmulas y dependents según los códigos 
+        # iniciales (código de la table de 'D' a 'B').
+        changes = {cell: code.replace('D', 'B') for code, cell in changes.items()}
+        ExcelTable.set_field(changes, field='code', with_dependents=True, data=df)
+
+        tbl.data.dependents = tbl.data.dependents.apply(lambda x: sorted(x))
+        df.dependents = df.dependents.apply(lambda x: sorted(x))
+
+        tdf1 = TableComparator(tbl.data)
+        tdf2 = TableComparator(df)
+
+        assert (tdf1 ^ tdf2).empty
+
 
     @pytest.mark.parametrize("fml, answer", [
         ('=DAYS360(F12, G12, TRUE)', "=xlf.days360(tbl['F12'].values,tbl['G12'].values,True)"),
