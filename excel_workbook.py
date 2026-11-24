@@ -790,19 +790,6 @@ class ExcelWorksheet(ExcelCollection):
 
         self.process_codes_to_delete(to_process, kwargs)
 
-        # self.insert(cell_slice, from_delete=True)
-        # self.propagate_error(XlErrors.REF_ERROR)
-
-        # for tbl, codes in all_dependents.items():
-        #     data = tbl.data
-        #     df = data.loc[data.code.isin(codes)]
-        #     codes = df.loc[df.value.isin(list(XlErrors))].code.tolist()
-        #     dependents = flatten_sets(df.dependents.tolist()) | set(df.code)
-        #     changed = dependents - set(codes)
-        #     if changed:
-        #         tbl.changed.extend(changed)
-        #         tbl.recalculate(recalc=True)
-
         pass
 
     @property

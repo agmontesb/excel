@@ -29,8 +29,44 @@ class TestKnownBugs:
     # Esto representa un problema cuando se tiene una hoja con rango de celdas pr lo menos de A1:ZZ0 ya 
     # que algunos códigos de celdas podrían interpretarse como códigos de enlace.
     #
+
+    # next bug = 8
+
+    def test_bug008_del_tbl(self):
+        bSolved = False
+
+        wb = ExcelWorkbook('MyBook')
+        sht1 = wb.create_worksheet('Sht1')
+        tbl1 = sht1.create_table('tbl1', 'A1:P100')
+        sht2 = wb.create_worksheet('Sht2')
+        tbl2 = sht2.create_table('tbl2', 'A1:P100')
+
+        tbl1.set_formulas({'A1': "=SUM('Sht2'!A1:A10)"}, recalc=True)
+        tbl2.set_values({'A5':20}, recalc=True)
+        tbl2_name = tbl2.title
+
+        del tbl2
+
+        assert (not bSolved) ^ (tbl2_name not in sht2.tablenames), "No desaparece tbl2_name de sht2.tablenames"
+        assert (not bSolved) ^ (XlErrors.REF_ERROR.code in tbl1), "No aparece error en tablas asociadas a tabla eliminada"
+
+
+    def test_bug007_fmls_external_links(self):
+        bSolved = False
+
+        wb = ExcelWorkbook('MyBook')
+        sht1 = wb.create_worksheet('Sht1')
+        tbl1 = sht1.create_table('tbl1', 'A1:P100')
+        sht2 = wb.create_worksheet('Sht2')
+        tbl2 = sht2.create_table('tbl2', 'A1:P100')
+
+        tbl1.set_formulas({'A1': "=SUM('Sht2'!A1:A10)"}, recalc=True)
+        tbl2.set_values({'A5':20}, recalc=True)
+
+        assert tbl2.cells(5, 'A').value == 20
+        assert tbl1.cells(1, 'A').formula == "=SUM('Sht2'!A1:A10)"
+        assert tbl1.cells(1, 'A').value == (20 if bSolved else 0), "No arrastra valor de sheet2 a sheet1"
     pass
-    # next bug = 7
 
 
 class TestSolvedBugs:
