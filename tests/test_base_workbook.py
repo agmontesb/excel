@@ -30,9 +30,93 @@ class TestKnownBugs:
     # que algunos códigos de celdas podrían interpretarse como códigos de enlace.
     #
 
-    # next bug = 8
+    # next bug = 010
+
+    def test_bug009_del_cols(self):
+        """
+        Bug:
+        Cuando se borran columnas (filas?) las fórmulas que involucran directamente (cells) o 
+        indirectamente (rangos) celdas eliminadas, cambian y en algunos casos no corresponden.
+        """
+        bSolved = False
+
+        wb = ExcelWorkbook('MyBook')
+        sht1 = wb.create_worksheet('Sht1')
+        tbl1 = sht1.create_table('tbl1', 'A1:P100')
+
+        vals = {'D4':1, 'E4':2, 'F4':3, 'G4':4, 'H4':5}
+        tbl1.set_values(vals)
+
+        fmls = {
+            'A4': '=+SUM(C4:E4)',
+            'A5': '=+SUM(D4:F4)',
+            'A6': '=+SUM(D4:H4)',
+            'A7': '=+SUM($D$4:$H$4)',
+            'A8': '=+SUM(F4:G4)',
+            'A9': '=+SUM(D4:$F$4)',
+            'A10': '=+SUM($D$4:F4)',
+            'A11': '=+SUM($D$4:$F$5)',
+            'A12': '=+SUM(G4:H4)',
+            'A13': '=+SUM($F$4:$H$4)'
+        }
+        tbl1.set_formulas(fmls, recalc=True)
+        calc_vals = {
+            'A4': 3,
+            'A5': 6,
+            'A6': 15,
+            'A7': 15,
+            'A8': 7,
+            'A9': 6,
+            'A10': 6,
+            'A11': 6,
+            'A12': 9,
+            'A13': 12
+        }
+
+        # Verificando datos iniciales
+        fnc = lambda adict, field: [(getattr(tbl1.cells(*tpl), field), val) for key, val in adict.items() if (tpl := cell_address(key))]
+        predicate = lambda adict, field: [calc == req for calc, req in fnc(adict, field)]
+        assert all(predicate(vals, 'value'))
+        assert all(predicate(fmls, 'formula'))
+        assert all(predicate(calc_vals, 'value'))
+
+        sht1.delete('E:G')
+
+        req_fmls = {
+            'A4': '=+SUM(C4:D4)',
+            'A5': '=+SUM(D4:D4)',
+            'A6': '=+SUM(D4:E4)',
+            'A7': '=+SUM($D$4:$E$4)',
+            'A8': '=+SUM(#REF!)',
+            'A9': '=+SUM(D4:$D$4)',
+            'A10': '=+SUM($D$4:D4)',
+            'A11': '=+SUM($D$4:$D$5)',
+            'A12': '=+SUM(E4:E4)',
+            'A13': '=+SUM($E$4:$E$4)'
+        }
+        assert (not bSolved ) ^ all(predicate(req_fmls, 'formula'))
+
+        req_vals = {
+            'A4': 3,
+            'A5': 6,
+            'A6': 15,
+            'A7': 15,
+            'A8': 7,
+            'A9': 6,
+            'A10': 6,
+            'A11': 6,
+            'A12': 9,
+            'A13': 12
+        }
+
+        assert (not bSolved ) ^ all(predicate(req_vals, 'value'))
 
     def test_bug008_del_tbl(self):
+        """
+        Bug:
+        Cuando se borra una tabla utilizando el comando 'del table' no se elimina su registro dentro
+        del worksheet/workbook. No implementado 'del worksheet'
+        """
         bSolved = False
 
         wb = ExcelWorkbook('MyBook')
@@ -52,6 +136,12 @@ class TestKnownBugs:
 
 
     def test_bug007_fmls_external_links(self):
+        """
+        Bug:
+        Cuando en una tabla una fórmula incluye un rango de valores de otra tabla ("=SUM('Sht2'!A1:A10)"), 
+        y se introduce en la otra tabla ('Sht2') un valor entre los denotados por el rango ('A5'), la celda
+        con la fórmula no se recalcula convenientemente.
+        """
         bSolved = False
 
         wb = ExcelWorkbook('MyBook')
